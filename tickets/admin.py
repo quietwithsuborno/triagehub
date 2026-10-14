@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Category, Ticket
+from .models import Category, Ticket, Comment
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
@@ -20,3 +20,9 @@ class TicketAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "priority", "category")
     search_fields = ("title", "description")
+
+@admin.register(Comment)
+class CommentAdmin(admin.ModelAdmin):
+    list_display = ("id", "ticket", "author", "is_internal", "created_at")
+    list_filter = ("is_internal",)
+    search_fields = ("body",)
