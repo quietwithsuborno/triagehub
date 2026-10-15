@@ -10,6 +10,9 @@ class TicketViewSet(viewsets.ModelViewSet):
     serializer_class = TicketSerializer
     permission_classes = [CanModifyTicket]
 
+    filterset_fields = ["status", "priority", "category"]
+    search_fields = ["title", "description"]
+
     def get_queryset(self):
         user = self.request.user
         if user.role in (User.Role.AGENT, User.Role.ADMIN):
@@ -19,13 +22,30 @@ class TicketViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by = self.request.user)
 
-    @action(detail = True, methods = ["get","post"], url_path = "comments")
+    @action(
+            detail = True, 
+            methods = ["get","post"], 
+            url_path = "comments",
+            serializer_class = CommentSerializer,
+    )
     def comments(self, request, pk = None):
         ticket = self.get_object()
+        is_staff_role = request.user.role in (User.Role.AGENT, User.Role.ADMIN)
+
         if request.method == "POST":
             serializer = CommentSerializer(data = request.data)
             serializer.is_valid(raise_exception = True)
-            serializer.save(ticket = ticket, author = request.user)
+
+            if is_staff_role:
+                serializer.save(ticket = ticket, author = request.user)
+            else:
+                serializer.save(ticket = ticket, author = request.user, is_internal = False)
+
             return Response(serializer.data, status = status.HTTP_201_CREATED)
-        serializer = CommentSerializer(ticket.comments.all(), many = True)
+
+        comments = ticket.comments.all()
+        if not is_staff_role:
+            comments = comments.filter(is_internal = False)
+
+        serializer = CommentSerializer(comments, many = True)
         return Response(serializer.data)
