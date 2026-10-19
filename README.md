@@ -24,35 +24,31 @@ Planned next: PostgreSQL and Docker, JWT authentication, and AI triage.
 
 - Python, Django, Django REST Framework
 - django-filter
-- SQLite (PostgreSQL planned)
+- PostgreSQL
+- Docker and Docker Compose
 
 ## Getting Started
 
+You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+
 1. Clone the repository and go into the folder.
-2. Create and activate a virtual environment:
+2. Create your `.env` file from the example, then open it and set a new `SECRET_KEY`:
 
 ```bash
-   python -m venv venv
-   venv\Scripts\activate
+   copy .env.example .env
 ```
 
-3. Install the dependencies:
+3. Build and start the containers:
 
 ```bash
-   pip install -r requirements.txt
+   docker compose up --build -d
 ```
 
-4. Create the database and an admin account:
+4. Create the database tables and an admin account:
 
 ```bash
-   python manage.py migrate
-   python manage.py createsuperuser
-```
-
-5. Run the server:
-
-```bash
-   python manage.py runserver
+   docker compose exec web python manage.py migrate
+   docker compose exec web python manage.py createsuperuser
 ```
 
 The API is available at `http://127.0.0.1:8000/api/v1/` and the admin panel at `http://127.0.0.1:8000/admin/`.
@@ -60,5 +56,5 @@ The API is available at `http://127.0.0.1:8000/api/v1/` and the admin panel at `
 ## Running Tests
 
 ```bash
-python manage.py test
+docker compose exec web python manage.py test
 ```
