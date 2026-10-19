@@ -6,9 +6,9 @@ Users submit support tickets, agents handle them, and admins manage everything. 
 
 ## Status
 
-Phase 1 (core backend, without AI) is complete. 
+Phase 1 (core backend) and Phase 2 (PostgreSQL and Docker) are complete. 
 
-Planned next: PostgreSQL and Docker, JWT authentication, and AI triage.
+Planned next: JWT authentication and AI triage.
 
 ## Features
 
