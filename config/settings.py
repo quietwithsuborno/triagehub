@@ -143,6 +143,10 @@ AUTH_USER_MODEL = 'accounts.User'
 
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [                              
+        "rest_framework_simplejwt.authentication.JWTAuthentication", 
+        "rest_framework.authentication.SessionAuthentication",       
+    ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
@@ -150,9 +154,8 @@ REST_FRAMEWORK = {
         "django_filters.rest_framework.DjangoFilterBackend",
         "rest_framework.filters.SearchFilter",
     ],
-    "DEFAULT_PAGINATION_CLASS":
-        "rest_framework.pagination.PageNumberPagination",
-        "PAGE_SIZE": 10,
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 10,
 }
 
 LOGIN_REDIRECT_URL = "/api/v1/tickets/"

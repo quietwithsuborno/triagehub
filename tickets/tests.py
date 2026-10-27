@@ -23,7 +23,7 @@ class TicketPermissionTests(APITestCase):
 
     def test_anonymouns_cannot_list_tickets(self):
         response = self.client.get('/api/v1/tickets/')
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
 
     def test_user_sees_only_own_tickets(self):
         self.client.force_authenticate(user = self.rahim)

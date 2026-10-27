@@ -20,6 +20,8 @@ services:
       DB_HOST: db
     depends_on:
       - db
+    volumes:
+      - .:/app
 
 volumes:
   postgres_data:
