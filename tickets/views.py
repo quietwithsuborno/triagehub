@@ -14,6 +14,8 @@ class TicketViewSet(viewsets.ModelViewSet):
     search_fields = ["title", "description"]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Ticket.objects.none()
         user = self.request.user
         if user.role in (User.Role.AGENT, User.Role.ADMIN):
             return Ticket.objects.all()
