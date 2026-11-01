@@ -6,9 +6,9 @@ Users submit support tickets, agents handle them, and admins manage everything. 
 
 ## Status
 
-Phase 1 (core backend) and Phase 2 (PostgreSQL and Docker) are complete. 
+Phase 1 (core backend), Phase 2 (PostgreSQL and Docker) and Phase 3 (JWT authentication and API docs) are complete. 
 
-Planned next: JWT authentication and AI triage.
+Next: AI triage.
 
 ## Features
 
@@ -19,6 +19,8 @@ Planned next: JWT authentication and AI triage.
 - Filtering (status, priority, category), search and pagination
 - Django admin panel
 - Automated tests
+- JWT authentication with access and refresh tokens
+- Interactive API documentation with Swagger (OpenAPI 3)
 
 ## Tech Stack
 
@@ -26,6 +28,8 @@ Planned next: JWT authentication and AI triage.
 - django-filter
 - PostgreSQL
 - Docker and Docker Compose
+- Simple JWT
+- drf-spectacular
 
 ## Getting Started
 
@@ -52,6 +56,36 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) insta
 ```
 
 The API is available at `http://127.0.0.1:8000/api/v1/` and the admin panel at `http://127.0.0.1:8000/admin/`.
+
+## API Documentation
+
+Open http://127.0.0.1:8000/api/docs/ to see all endpoints in Swagger UI and try them in the browser.
+
+## Authentication
+
+The API uses JWT tokens.
+
+1. Log in to get an access token and a refresh token:
+
+   ```
+   POST /api/v1/auth/login/
+   {"username": "your-username", "password": "your-password"}
+   ```
+
+2. Send the access token with every request:
+
+   ```
+   Authorization: Bearer <access-token>
+   ```
+
+3. The access token expires after about 5 minutes. Get a new one with the refresh token:
+
+   ```
+   POST /api/v1/auth/refresh/
+   {"refresh": "<refresh-token>"}
+   ```
+
+In Swagger, log in with `/api/v1/auth/login/`, then click **Authorize** and paste the access token.
 
 ## Running Tests
 

@@ -31,3 +31,32 @@ class RegisterTests(APITestCase):
 
         user = User.objects.get(username='sneaky')
         self.assertEqual(user.role, User.Role.USER)
+
+class JWTAuthTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="rahim", password="pass12345")
+        self.login_url = "/api/v1/auth/login/"
+
+    def test_login_returns_access_and_refresh(self):
+        response = self.client.post(self.login_url, {"username": "rahim", "password": "pass12345"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+    def test_login_with_wrong_password_fails(self):
+        response = self.client.post(self.login_url, {"username": "rahim", "password": "wrongpass"})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access", response.data)
+
+    def test_access_token_opens_ticket_list(self):
+        login = self.client.post(self.login_url, {"username": "rahim", "password": "pass12345"})
+        token = login.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.get("/api/v1/tickets/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_refresh_returns_new_access_token(self):
+        login = self.client.post(self.login_url, {"username": "rahim", "password": "pass12345"})
+        response = self.client.post("/api/v1/auth/refresh/", {"refresh": login.data["refresh"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.data)
