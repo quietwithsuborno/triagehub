@@ -1,4 +1,4 @@
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 from .models import User
 
 class RegisterTests(APITestCase):
@@ -31,6 +31,25 @@ class RegisterTests(APITestCase):
 
         user = User.objects.get(username='sneaky')
         self.assertEqual(user.role, User.Role.USER)
+
+    def test_register_works_while_logged_in_with_session(self):
+        User.objects.create_user(username="suborno", password="pass12345")
+        client = APIClient(enforce_csrf_checks=True)
+        client.login(username="suborno", password="pass12345")
+        response = client.post(
+            "/api/v1/auth/register/",
+            {"username": "newuser", "email": "new@example.com", "password": "pass12345"},
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_register_ignores_invalid_token(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer this-is-not-a-real-token")
+        response = self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "newuser2", "email": "new2@example.com", "password": "pass12345"},
+        )
+        self.assertEqual(response.status_code, 201)
+
 
 class JWTAuthTests(APITestCase):
     def setUp(self):
