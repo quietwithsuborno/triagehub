@@ -45,6 +45,31 @@ class TicketPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(Ticket.objects.filter(id = self.rahim_ticket.id).exists())
 
+    def test_user_cannot_view_other_users_ticket(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.get(f"/api/v1/tickets/{self.karim_ticket.id}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_user_cannot_update_ticket(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.patch(
+            f"/api/v1/tickets/{self.rahim_ticket.id}/", 
+            {'status': 'closed'}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.rahim_ticket.refresh_from_db()
+        self.assertEqual(self.rahim_ticket.status, Ticket.Status.OPEN)
+
+    def test_agent_can_update_status(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.patch(
+            f"/api/v1/tickets/{self.rahim_ticket.id}/", 
+            {'status': 'in_progress'}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.rahim_ticket.refresh_from_db()
+        self.assertEqual(self.rahim_ticket.status, Ticket.Status.IN_PROGRESS)
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
