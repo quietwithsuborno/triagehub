@@ -88,3 +88,9 @@ class CommentPrivacyTests(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertFalse(response.data['is_internal'])
+
+    def test_comment_created_at_includes_time(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("T", response.data[0]['created_at'])

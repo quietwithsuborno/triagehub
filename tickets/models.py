@@ -79,10 +79,10 @@ class Comment(models.Model):
      )
      body = models.TextField()
      is_internal = models.BooleanField(default = False)
-     created_at = models.DateField(auto_now_add = True)
+     created_at = models.DateTimeField(auto_now_add = True)
 
      class Meta:
-          ordering = ['created_at']
+          ordering = ['created_at', 'id']
 
      def __str__(self):
           return f"Comment by {self.author} on ticket #{self.ticket_id}"
