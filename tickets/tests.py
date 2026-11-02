@@ -15,13 +15,13 @@ class TicketPermissionTests(APITestCase):
             description = 'rahim er problem',
             created_by = self.rahim
         )
-        self.karim.ticket = Ticket.objects.create(
+        self.karim_ticket = Ticket.objects.create(
             title = 'karim ticket',
             description = 'karim er problem',
             created_by = self.karim
         )
 
-    def test_anonymouns_cannot_list_tickets(self):
+    def test_anonymous_cannot_list_tickets(self):
         response = self.client.get('/api/v1/tickets/')
         self.assertEqual(response.status_code, 401)
 

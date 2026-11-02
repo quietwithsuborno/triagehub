@@ -54,7 +54,7 @@ class Ticket(models.Model):
          blank = True,
          related_name = "assigned_tickets",
     )
-    ai_summary = models.CharField(max_length=500, blank=True, null=True)
+    
     ai_summary = models.CharField(max_length=300, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

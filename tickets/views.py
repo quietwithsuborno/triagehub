@@ -17,9 +17,10 @@ class TicketViewSet(viewsets.ModelViewSet):
         if getattr(self, "swagger_fake_view", False):
             return Ticket.objects.none()
         user = self.request.user
+        queryset = Ticket.objects.select_related("created_by")
         if user.role in (User.Role.AGENT, User.Role.ADMIN):
-            return Ticket.objects.all()
-        return Ticket.objects.filter(created_by = user)
+            return queryset
+        return queryset.filter(created_by = user)
 
     def perform_create(self, serializer):
         serializer.save(created_by = self.request.user)
