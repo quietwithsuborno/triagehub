@@ -119,3 +119,18 @@ class CommentPrivacyTests(APITestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("T", response.data[0]['created_at'])
+
+    def test_agent_can_see_internal_note(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.post(
+            self.url,
+            {'body': 'Team note', 'is_internal' : True} 
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['is_internal'])
+
+    def test_user_cannot_see_comments_on_other_users_ticket(self):
+        jamal = User.objects.create_user(username = "jamal", password = "pass12345")
+        self.client.force_authenticate(user = jamal)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 404)
