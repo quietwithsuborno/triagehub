@@ -134,3 +134,45 @@ class CommentPrivacyTests(APITestCase):
         self.client.force_authenticate(user = jamal)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 404)
+
+    def test_user_creates_ticket_with_defaults(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(
+            "/api/v1/tickets/",
+            {"title": "New problem", "description": "Something is broken"},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], "open")
+        self.assertEqual(response.data["priority"], "medium")
+        self.assertEqual(response.data["created_by_username"], "rahim")
+
+class TicketFilterTests(APITestCase):
+    def setUp(self):
+        self.karim = User.objects.create_user(
+            username = "karim", password = "pass12345", role = User.Role.AGENT
+        )
+        Ticket.objects.create(
+            title = "Payment page error",
+            description = "Customers cannot pay",
+            status = Ticket.Status.OPEN,
+            created_by = self.karim,
+        )
+        Ticket.objects.create(
+            title = "Dark mode request",
+            description = "Please add dark mode",
+            status = Ticket.Status.RESOLVED,
+            created_by = self.karim,
+        )
+        self.client.force_authenticate(user = self.karim)
+
+    def test_filter_by_status(self):
+        response = self.client.get("/api/v1/tickets/?status=resolved")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Dark mode request")
+
+    def test_search_by_word(self):
+        response = self.client.get("/api/v1/tickets/?search=payment")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Payment page error")
