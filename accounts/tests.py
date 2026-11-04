@@ -50,6 +50,15 @@ class RegisterTests(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
 
+    def test_register_rejects_short_password(self):
+        response = self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "shorty", "email": "shorty@example.com", "password": "123"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(username = "shorty").exists())
+
 
 class JWTAuthTests(APITestCase):
     def setUp(self):
@@ -79,3 +88,10 @@ class JWTAuthTests(APITestCase):
         response = self.client.post("/api/v1/auth/refresh/", {"refresh": login.data["refresh"]})
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.data)
+
+    def test_refresh_with_invalid_token_fails(self):
+        response = self.client.post(
+            "/api/v1/auth/refresh/", {"refresh": "this-is-not-a-real-token"}
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access", response.data)
