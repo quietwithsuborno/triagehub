@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 from accounts.models import User
-from .models import Ticket, Comment
+from .models import Ticket, Comment, Category
 
 class TicketPermissionTests(APITestCase):
     def setUp(self):
@@ -229,6 +229,43 @@ class TicketFilterTests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["title"], "Payment page error")
 
+    def test_filter_by_priority(self):
+        Ticket.objects.create(
+            title = "Server down",
+            description = "Nothing loads",
+            priority = Ticket.Priority.URGENT,
+            created_by = self.karim,
+        )
+        response = self.client.get("/api/v1/tickets/?priority=urgent")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Server down")
+
+    def test_filter_by_category(self):
+        billing = Category.objects.create(name = "Billing")
+        Ticket.objects.create(
+            title = "Invoice missing",
+            description = "No invoice email",
+            category = billing,
+            created_by = self.karim,
+        )
+        response = self.client.get(f"/api/v1/tickets/?category={billing.id}")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Invoice missing")
+
+    def test_search_in_description(self):
+        response = self.client.get("/api/v1/tickets/?search=customers")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Payment page error")
+
+    def test_list_is_paginated(self):
+        for i in range(11):
+            Ticket.objects.create(
+                title = f"Bulk ticket {i}", description = "bulk", created_by = self.karim
+            )
+        response = self.client.get("/api/v1/tickets/")
+        self.assertEqual(response.data["count"], 13)
+        self.assertEqual(len(response.data["results"]), 10)
+        self.assertIsNotNone(response.data["next"])
 
 class APIDocsTests(APITestCase):
     def test_schema_is_available(self):
