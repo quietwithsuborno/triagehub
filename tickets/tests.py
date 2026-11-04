@@ -107,6 +107,13 @@ class TicketPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["created_by"], self.rahim.id)
 
+    def test_anonymous_cannot_view_ticket_or_comments(self):
+        response = self.client.get(f"/api/v1/tickets/{self.rahim_ticket.id}/")
+        self.assertEqual(response.status_code, 401)
+
+        response = self.client.get(f"/api/v1/tickets/{self.rahim_ticket.id}/comments/")
+        self.assertEqual(response.status_code, 401)
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
@@ -221,3 +228,13 @@ class TicketFilterTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["title"], "Payment page error")
+
+
+class APIDocsTests(APITestCase):
+    def test_schema_is_available(self):
+        response = self.client.get("/api/schema/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_docs_page_is_available(self):
+        response = self.client.get("/api/docs/")
+        self.assertEqual(response.status_code, 200)
