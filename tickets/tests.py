@@ -70,6 +70,25 @@ class TicketPermissionTests(APITestCase):
         self.rahim_ticket.refresh_from_db()
         self.assertEqual(self.rahim_ticket.status, Ticket.Status.IN_PROGRESS)
 
+    def test_agent_sees_all_tickets(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.get("/api/v1/tickets/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+
+    def test_admin_sees_all_and_can_resolve(self):
+        admin = User.objects.create_user(
+            username = "boss", password = "pass12345", role = User.Role.ADMIN
+        )
+        self.client.force_authenticate(user = admin)
+        response = self.client.get("/api/v1/tickets/")
+        self.assertEqual(response.data["count"], 2)
+
+        response = self.client.patch(
+            f"/api/v1/tickets/{self.rahim_ticket.id}/", {"status": "resolved"}
+        )
+        self.assertEqual(response.status_code, 200)
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
