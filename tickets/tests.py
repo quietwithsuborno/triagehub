@@ -89,6 +89,24 @@ class TicketPermissionTests(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_agent_can_assign_ticket_to_agent(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.patch(
+            f"/api/v1/tickets/{self.rahim_ticket.id}/", {"assigned_to": self.karim.id}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.rahim_ticket.refresh_from_db()
+        self.assertEqual(self.rahim_ticket.assigned_to, self.karim)
+
+    def test_user_cannot_create_ticket_as_someone_else(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(
+            "/api/v1/tickets/",
+            {"title": "Fake", "description": "Pretending to be karim", "created_by": self.karim.id},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["created_by"], self.rahim.id)
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
@@ -164,6 +182,14 @@ class CommentPrivacyTests(APITestCase):
         self.assertEqual(response.data["status"], "open")
         self.assertEqual(response.data["priority"], "medium")
         self.assertEqual(response.data["created_by_username"], "rahim")
+
+    def test_user_cannot_comment_as_someone_else(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(
+            self.url, {"body": "Fake comment", "author": self.karim.id}
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["author"], self.rahim.id)
 
 class TicketFilterTests(APITestCase):
     def setUp(self):
