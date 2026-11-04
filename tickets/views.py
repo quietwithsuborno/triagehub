@@ -23,14 +23,24 @@ class TicketViewSet(viewsets.ModelViewSet):
         return queryset.filter(created_by = user)
 
     def perform_create(self, serializer):
-        serializer.save(created_by = self.request.user)
-
+        user = self.request.user
+        if user.role in (User.Role.AGENT, User.Role.ADMIN):
+            serializer.save(created_by = user)
+        else:
+            serializer.save(
+                created_by = user,
+                status = Ticket.Status.OPEN,
+                priority = Ticket.Priority.MEDIUM,
+                category = None,
+                assigned_to = None,
+            )
     @action(
             detail = True, 
             methods = ["get","post"], 
             url_path = "comments",
             serializer_class = CommentSerializer,
     )
+    
     def comments(self, request, pk = None):
         ticket = self.get_object()
         is_staff_role = request.user.role in (User.Role.AGENT, User.Role.ADMIN)

@@ -114,6 +114,26 @@ class TicketPermissionTests(APITestCase):
         response = self.client.get(f"/api/v1/tickets/{self.rahim_ticket.id}/comments/")
         self.assertEqual(response.status_code, 401)
 
+    def test_user_cannot_set_triage_fields_on_create(self):
+        billing = Category.objects.create(name = "Billing")
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(
+            "/api/v1/tickets/",
+            {
+                "title": "Please fix fast",
+                "description": "I want this to be urgent",
+                "priority": "urgent",
+                "status": "closed",
+                "category": billing.id,
+                "assigned_to": self.karim.id,
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["priority"], "medium")
+        self.assertEqual(response.data["status"], "open")
+        self.assertIsNone(response.data["category"])
+        self.assertIsNone(response.data["assigned_to"])
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
