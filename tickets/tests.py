@@ -98,6 +98,18 @@ class TicketPermissionTests(APITestCase):
         self.rahim_ticket.refresh_from_db()
         self.assertEqual(self.rahim_ticket.assigned_to, self.karim)
 
+    def test_user_creates_ticket_with_defaults(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(
+            "/api/v1/tickets/",
+            {"title": "New problem", "description": "Something is broken"},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], "open")
+        self.assertEqual(response.data["priority"], "medium")
+        self.assertEqual(response.data["created_by_username"], "rahim")
+
+    
     def test_user_cannot_create_ticket_as_someone_else(self):
         self.client.force_authenticate(user = self.rahim)
         response = self.client.post(
@@ -179,7 +191,7 @@ class TicketPermissionTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("category_name", response.data)
         self.assertIsNone(response.data["category_name"])
-
+    
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
@@ -230,7 +242,7 @@ class CommentPrivacyTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("T", response.data[0]['created_at'])
 
-    def test_agent_can_see_internal_note(self):
+    def test_agent_can_create_internal_note(self):
         self.client.force_authenticate(user = self.karim)
         response = self.client.post(
             self.url,
@@ -244,17 +256,6 @@ class CommentPrivacyTests(APITestCase):
         self.client.force_authenticate(user = jamal)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 404)
-
-    def test_user_creates_ticket_with_defaults(self):
-        self.client.force_authenticate(user = self.rahim)
-        response = self.client.post(
-            "/api/v1/tickets/",
-            {"title": "New problem", "description": "Something is broken"},
-        )
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["status"], "open")
-        self.assertEqual(response.data["priority"], "medium")
-        self.assertEqual(response.data["created_by_username"], "rahim")
 
     def test_user_cannot_comment_as_someone_else(self):
         self.client.force_authenticate(user = self.rahim)
