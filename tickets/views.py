@@ -56,7 +56,8 @@ class TicketViewSet(viewsets.ModelViewSet):
 
             return Response(serializer.data, status = status.HTTP_201_CREATED)
 
-        comments = ticket.comments.all()
+        comments = ticket.comments.select_related("author")
+        
         if not is_staff_role:
             comments = comments.filter(is_internal = False)
 

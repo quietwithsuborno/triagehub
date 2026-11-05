@@ -38,12 +38,17 @@ class TicketSerializer(serializers.ModelSerializer):
         return value
 
 class CommentSerializer(serializers.ModelSerializer):
+    author_username = serializers.CharField(source = "author.username", read_only = True)
+    author_role = serializers.CharField(source = "author.role", read_only = True)
+
     class Meta:
         model = Comment
         fields = [
             'id',
             'ticket',
             'author',
+            'author_username',
+            'author_role',
             'body',
             'is_internal',
             'created_at',

@@ -228,6 +228,17 @@ class CommentPrivacyTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["author"], self.rahim.id)
 
+    def test_comments_show_author_name_and_role(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(response.data[0]["author_username"], "rahim")
+        self.assertEqual(response.data[0]["author_role"], "user")
+
+        self.assertEqual(response.data[1]["author_username"], "karim")
+        self.assertEqual(response.data[1]["author_role"], "agent")
+
 class TicketFilterTests(APITestCase):
     def setUp(self):
         self.karim = User.objects.create_user(
