@@ -21,9 +21,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         if user.is_support_staff:
             return queryset
         return queryset.filter(created_by = user)
-
-        if user.is_support_staff:
-            return queryset
+    
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -37,13 +35,10 @@ class TicketViewSet(viewsets.ModelViewSet):
                 category = None,
                 assigned_to = None,
             )
-        if user.is_support_staff:
-            serializer.save(created_by = user)
 
     @action(
             detail = True, 
             methods = ["get","post"], 
-            url_path = "comments",
             serializer_class = CommentSerializer,
     )
     

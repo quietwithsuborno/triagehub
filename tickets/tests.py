@@ -134,6 +134,24 @@ class TicketPermissionTests(APITestCase):
         self.assertIsNone(response.data["category"])
         self.assertIsNone(response.data["assigned_to"])
 
+    def test_agent_can_set_triage_fields_on_create(self):
+        billing = Category.objects.create(name = "Billing")
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.post(
+            "/api/v1/tickets/",
+            {
+                "title": "Server down for all customers",
+                "description": "Reported by phone",
+                "priority": "urgent",
+                "category": billing.id,
+                "assigned_to": self.karim.id,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["priority"], "urgent")
+        self.assertEqual(response.data["category"], billing.id)
+        self.assertEqual(response.data["assigned_to"], self.karim.id)
+
     def test_cannot_assign_ticket_to_regular_user(self):
         self.client.force_authenticate(user = self.karim)
         response = self.client.patch(
