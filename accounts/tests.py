@@ -59,6 +59,15 @@ class RegisterTests(APITestCase):
         self.assertIn("password", response.data)
         self.assertFalse(User.objects.filter(username = "shorty").exists())
 
+    def test_register_rejects_common_password(self):
+        response = self.client.post(
+            "/api/v1/auth/register/",
+            {"username": "weakuser", "email": "weak@example.com", "password": "12345678"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(username = "weakuser").exists())
+
 
 class JWTAuthTests(APITestCase):
     def setUp(self):
