@@ -20,6 +20,7 @@ class TicketAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "priority", "category")
     search_fields = ("title", "description")
+    list_select_related = ("category", "created_by", "assigned_to")
 
 @admin.register(Comment)
 class CommentAdmin(admin.ModelAdmin):
