@@ -24,8 +24,11 @@ load_dotenv(BASE_DIR / ".env")
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ["SECRET_KEY"]
+# Off unless .env says DEBUG=True, so a missing setting fails safe (off).
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
+# Empty is fine while DEBUG is on (localhost only). Must list real hosts before
+# deploying (Phase 5/6).
 ALLOWED_HOSTS = []
 
 
@@ -137,13 +140,20 @@ MAILERS = {
 }
 
 
+# Our own User model (with role). Set before the first migrate, because changing
+# it later is very hard.
 AUTH_USER_MODEL = "accounts.User"
 
 
+# Defaults for every API view. A view can override any of them, for example
+# RegisterView turns off authentication.
 REST_FRAMEWORK = {
+    # JWT only. Session login was removed from the API because it needs CSRF
+    # tokens and caused "CSRF Failed" when logged into the admin panel.
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
+    # Locked by default: every endpoint needs a login unless it says otherwise.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
@@ -156,10 +166,11 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+# Swagger / OpenAPI docs served at /api/docs/.
 SPECTACULAR_SETTINGS = {
     "TITLE": "TriageHub API",
     "DESCRIPTION": "AI-powered helpdesk and ticket management system",
     "VERSION": "1.0.0",
     "SCHEMA_PATH_PREFIX": r"/api/v1",
-    "SERVE_INCLUDE_SCHEMA": False,
+    "SERVE_INCLUDE_SCHEMA": False,  # hide the /api/schema/ endpoint from the docs
 }

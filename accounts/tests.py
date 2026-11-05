@@ -1,8 +1,12 @@
+"""Tests for sign-up, JWT login and refresh, and the User model."""
+
 from rest_framework.test import APIClient, APITestCase
 from .models import User
 
 
 class RegisterTests(APITestCase):
+    """POST /api/v1/auth/register/: who can sign up, and with what."""
+
     def test_register_creates_user_with_default_role(self):
         response = self.client.post(
             "/api/v1/auth/register/",
@@ -33,6 +37,9 @@ class RegisterTests(APITestCase):
         user = User.objects.get(username="sneaky")
         self.assertEqual(user.role, User.Role.USER)
 
+    # Regression test: register once failed with "CSRF Failed" when the same
+    # browser was logged into the admin panel (shared session cookie).
+    # enforce_csrf_checks=True makes the test client behave like that browser.
     def test_register_works_while_logged_in_with_session(self):
         User.objects.create_user(username="suborno", password="pass12345")
         client = APIClient(enforce_csrf_checks=True)
@@ -47,6 +54,8 @@ class RegisterTests(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
 
+    # A leftover or expired token must not block sign-up (authentication is
+    # turned off on RegisterView).
     def test_register_ignores_invalid_token(self):
         self.client.credentials(HTTP_AUTHORIZATION="Bearer this-is-not-a-real-token")
         response = self.client.post(
@@ -68,6 +77,7 @@ class RegisterTests(APITestCase):
         self.assertIn("password", response.data)
         self.assertFalse(User.objects.filter(username="shorty").exists())
 
+    # "12345678" is long enough, so only the common-password validator stops it.
     def test_register_rejects_common_password(self):
         response = self.client.post(
             "/api/v1/auth/register/",
@@ -83,6 +93,8 @@ class RegisterTests(APITestCase):
 
 
 class JWTAuthTests(APITestCase):
+    """Login and refresh with real tokens (no force_authenticate here)."""
+
     def setUp(self):
         self.user = User.objects.create_user(username="rahim", password="pass12345")
         self.login_url = "/api/v1/auth/login/"
@@ -130,7 +142,10 @@ class JWTAuthTests(APITestCase):
 
 
 class UserModelTests(APITestCase):
+    """The User model on its own, without the API."""
+
     def test_is_support_staff_by_role(self):
+        # User(...) is not saved to the database; the property needs only role.
         user = User(role=User.Role.USER)
         agent = User(role=User.Role.AGENT)
         admin = User(role=User.Role.ADMIN)
