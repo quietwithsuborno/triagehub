@@ -134,6 +134,16 @@ class TicketPermissionTests(APITestCase):
         self.assertIsNone(response.data["category"])
         self.assertIsNone(response.data["assigned_to"])
 
+    def test_cannot_assign_ticket_to_regular_user(self):
+        self.client.force_authenticate(user = self.karim)
+        response = self.client.patch(
+            f"/api/v1/tickets/{self.rahim_ticket.id}/", {"assigned_to": self.rahim.id}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("assigned_to", response.data)
+        self.rahim_ticket.refresh_from_db()
+        self.assertIsNone(self.rahim_ticket.assigned_to)
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):
