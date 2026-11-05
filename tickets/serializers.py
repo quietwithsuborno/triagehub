@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Ticket, Comment
+from .models import Ticket, Comment, Category
 from accounts.models import User
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -62,3 +62,9 @@ class CommentSerializer(serializers.ModelSerializer):
             "author",
             "created_at",
         ]
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "name"]

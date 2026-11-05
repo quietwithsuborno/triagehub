@@ -334,3 +334,30 @@ class APIDocsTests(APITestCase):
     def test_docs_page_is_available(self):
         response = self.client.get("/api/docs/")
         self.assertEqual(response.status_code, 200)
+
+
+class CategoryAPITests(APITestCase):
+    def setUp(self):
+        self.rahim = User.objects.create_user(
+            username = "rahim", password = "pass12345"
+        )
+        Category.objects.create(name = "Bug")
+        Category.objects.create(name = "Billing")
+        self.url = "/api/v1/categories/"
+
+    def test_logged_in_user_can_list_categories(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        names = [category["name"] for category in response.data]
+        self.assertEqual(names, ["Billing", "Bug"])
+
+    def test_anonymous_cannot_list_categories(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 401)
+
+    def test_user_cannot_create_category(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.post(self.url, {"name": "Hacked"})
+        self.assertEqual(response.status_code, 405)
+        self.assertFalse(Category.objects.filter(name = "Hacked").exists())

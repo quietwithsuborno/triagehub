@@ -2,8 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from accounts.models import User
-from .models import Ticket
-from .serializers import TicketSerializer, CommentSerializer
+from .models import Ticket, Category
+from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
 
 class TicketViewSet(viewsets.ModelViewSet):
@@ -18,7 +18,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             return Ticket.objects.none()
         user = self.request.user
         queryset = Ticket.objects.select_related("created_by", "category")
-        
+
         if user.role in (User.Role.AGENT, User.Role.ADMIN):
             return queryset
         return queryset.filter(created_by = user)
@@ -64,3 +64,9 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         serializer = CommentSerializer(comments, many = True)
         return Response(serializer.data)
+
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+    pagination_class = None
