@@ -17,7 +17,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         if getattr(self, "swagger_fake_view", False):
             return Ticket.objects.none()
         user = self.request.user
-        queryset = Ticket.objects.select_related("created_by")
+        queryset = Ticket.objects.select_related("created_by", "category")
+        
         if user.role in (User.Role.AGENT, User.Role.ADMIN):
             return queryset
         return queryset.filter(created_by = user)
@@ -57,7 +58,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status = status.HTTP_201_CREATED)
 
         comments = ticket.comments.select_related("author")
-        
+
         if not is_staff_role:
             comments = comments.filter(is_internal = False)
 

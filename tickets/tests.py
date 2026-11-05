@@ -144,6 +144,24 @@ class TicketPermissionTests(APITestCase):
         self.rahim_ticket.refresh_from_db()
         self.assertIsNone(self.rahim_ticket.assigned_to)
 
+    def test_ticket_shows_category_name(self):
+        bug = Category.objects.create(name = "Bug")
+        self.rahim_ticket.category = bug
+        self.rahim_ticket.save()
+
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.get(f"/api/v1/tickets/{self.rahim_ticket.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["category"], bug.id)
+        self.assertEqual(response.data["category_name"], "Bug")
+
+    def test_ticket_without_category_has_null_category_name(self):
+        self.client.force_authenticate(user = self.rahim)
+        response = self.client.get(f"/api/v1/tickets/{self.rahim_ticket.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("category_name", response.data)
+        self.assertIsNone(response.data["category_name"])
+
 
 class CommentPrivacyTests(APITestCase):
     def setUp(self):

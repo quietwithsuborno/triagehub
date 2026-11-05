@@ -5,6 +5,8 @@ from accounts.models import User
 class TicketSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source="created_by.username", read_only=True)
     created_by_role = serializers.CharField(source="created_by.role",read_only=True )
+    category_name = serializers.CharField(source="category.name", read_only=True, allow_null=True)
+
     class Meta:
         model = Ticket
         fields = [
@@ -14,6 +16,7 @@ class TicketSerializer(serializers.ModelSerializer):
             'status',
             'priority',
             'category',
+            'category_name',
             'created_by',
             'created_by_username',
             "created_by_role",
