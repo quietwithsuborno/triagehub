@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from .models import Ticket, Comment, Category
-from accounts.models import User
 
 class TicketSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source="created_by.username", read_only=True)
@@ -34,7 +33,7 @@ class TicketSerializer(serializers.ModelSerializer):
         ]
 
     def validate_assigned_to(self, value):
-        if value is not None and value.role not in (User.Role.AGENT, User.Role.ADMIN):
+        if value is not None and not value.is_support_staff:
             raise serializers.ValidationError(
                 "Tickets can only be assigned to an agent or admin."
             )

@@ -11,5 +11,9 @@ class User(AbstractUser):
         choices = Role.choices,
         default = Role.USER,
     )
+    @property
+    def is_support_staff(self):
+        return self.role in {self.Role.AGENT, self.Role.ADMIN}
+    
     def __str__(self):
         return f"{self.username} ({self.role})"

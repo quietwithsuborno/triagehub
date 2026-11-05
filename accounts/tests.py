@@ -104,3 +104,12 @@ class JWTAuthTests(APITestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertNotIn("access", response.data)
+
+class UserModelTests(APITestCase):
+    def test_is_support_staff_by_role(self):
+        user = User(role=User.Role.USER)
+        agent = User(role=User.Role.AGENT)
+        admin = User(role=User.Role.ADMIN)
+        self.assertFalse(user.is_support_staff)
+        self.assertTrue(agent.is_support_staff)
+        self.assertTrue(admin.is_support_staff)

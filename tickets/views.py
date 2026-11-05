@@ -1,7 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from accounts.models import User
 from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
@@ -19,13 +18,16 @@ class TicketViewSet(viewsets.ModelViewSet):
         user = self.request.user
         queryset = Ticket.objects.select_related("created_by", "category")
 
-        if user.role in (User.Role.AGENT, User.Role.ADMIN):
+        if user.is_support_staff:
             return queryset
         return queryset.filter(created_by = user)
 
+        if user.is_support_staff:
+            return queryset
+
     def perform_create(self, serializer):
         user = self.request.user
-        if user.role in (User.Role.AGENT, User.Role.ADMIN):
+        if user.is_support_staff:
             serializer.save(created_by = user)
         else:
             serializer.save(
@@ -35,6 +37,9 @@ class TicketViewSet(viewsets.ModelViewSet):
                 category = None,
                 assigned_to = None,
             )
+        if user.is_support_staff:
+            serializer.save(created_by = user)
+
     @action(
             detail = True, 
             methods = ["get","post"], 
@@ -44,13 +49,12 @@ class TicketViewSet(viewsets.ModelViewSet):
     
     def comments(self, request, pk = None):
         ticket = self.get_object()
-        is_staff_role = request.user.role in (User.Role.AGENT, User.Role.ADMIN)
 
         if request.method == "POST":
             serializer = CommentSerializer(data = request.data)
             serializer.is_valid(raise_exception = True)
 
-            if is_staff_role:
+            if request.user.is_support_staff:
                 serializer.save(ticket = ticket, author = request.user)
             else:
                 serializer.save(ticket = ticket, author = request.user, is_internal = False)
@@ -59,7 +63,7 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         comments = ticket.comments.select_related("author")
 
-        if not is_staff_role:
+        if not request.user.is_support_staff:
             comments = comments.filter(is_internal = False)
 
         serializer = CommentSerializer(comments, many = True)

@@ -128,7 +128,7 @@ class TicketPermissionTests(APITestCase):
                 "assigned_to": self.karim.id,
             },
         )
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["priority"], "medium")
         self.assertEqual(response.data["status"], "open")
         self.assertIsNone(response.data["category"])
