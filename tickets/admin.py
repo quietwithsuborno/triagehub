@@ -27,3 +27,4 @@ class CommentAdmin(admin.ModelAdmin):
     list_display = ("id", "ticket", "author", "is_internal", "created_at")
     list_filter = ("is_internal",)
     search_fields = ("body",)
+    list_select_related = ("ticket", "author")
