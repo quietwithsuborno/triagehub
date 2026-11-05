@@ -5,6 +5,7 @@ from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
 
+
 class TicketViewSet(viewsets.ModelViewSet):
     serializer_class = TicketSerializer
     permission_classes = [CanModifyTicket]
@@ -20,48 +21,46 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         if user.is_support_staff:
             return queryset
-        return queryset.filter(created_by = user)
-    
+        return queryset.filter(created_by=user)
 
     def perform_create(self, serializer):
         user = self.request.user
         if user.is_support_staff:
-            serializer.save(created_by = user)
+            serializer.save(created_by=user)
         else:
             serializer.save(
-                created_by = user,
-                status = Ticket.Status.OPEN,
-                priority = Ticket.Priority.MEDIUM,
-                category = None,
-                assigned_to = None,
+                created_by=user,
+                status=Ticket.Status.OPEN,
+                priority=Ticket.Priority.MEDIUM,
+                category=None,
+                assigned_to=None,
             )
 
     @action(
-            detail = True, 
-            methods = ["get","post"], 
-            serializer_class = CommentSerializer,
+        detail=True,
+        methods=["get", "post"],
+        serializer_class=CommentSerializer,
     )
-    
-    def comments(self, request, pk = None):
+    def comments(self, request, pk=None):
         ticket = self.get_object()
 
         if request.method == "POST":
-            serializer = CommentSerializer(data = request.data)
-            serializer.is_valid(raise_exception = True)
+            serializer = CommentSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
 
             if request.user.is_support_staff:
-                serializer.save(ticket = ticket, author = request.user)
+                serializer.save(ticket=ticket, author=request.user)
             else:
-                serializer.save(ticket = ticket, author = request.user, is_internal = False)
+                serializer.save(ticket=ticket, author=request.user, is_internal=False)
 
-            return Response(serializer.data, status = status.HTTP_201_CREATED)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         comments = ticket.comments.select_related("author")
 
         if not request.user.is_support_staff:
-            comments = comments.filter(is_internal = False)
+            comments = comments.filter(is_internal=False)
 
-        serializer = CommentSerializer(comments, many = True)
+        serializer = CommentSerializer(comments, many=True)
         return Response(serializer.data)
 
 

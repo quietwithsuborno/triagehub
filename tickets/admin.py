@@ -1,10 +1,12 @@
 from django.contrib import admin
 from .models import Category, Ticket, Comment
 
+
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name',)
-    search_fields = ('name',)
+    list_display = ("name",)
+    search_fields = ("name",)
+
 
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
@@ -21,6 +23,7 @@ class TicketAdmin(admin.ModelAdmin):
     list_filter = ("status", "priority", "category")
     search_fields = ("title", "description")
     list_select_related = ("category", "created_by", "assigned_to")
+
 
 @admin.register(Comment)
 class CommentAdmin(admin.ModelAdmin):
