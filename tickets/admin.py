@@ -1,7 +1,7 @@
 """Django admin panel setup for categories, tickets and comments."""
 
 from django.contrib import admin
-from .models import Category, Ticket, Comment
+from .models import Category, Ticket, Comment, AILog
 
 
 @admin.register(Category)
@@ -35,3 +35,31 @@ class CommentAdmin(admin.ModelAdmin):
     list_filter = ("is_internal",)
     search_fields = ("body",)
     list_select_related = ("ticket", "author")  # same N+1 fix as TicketAdmin
+
+
+@admin.register(AILog)
+class AILogAdmin(admin.ModelAdmin):
+    """Read-only view of AI calls: a log is a record of what happened."""
+
+    list_display = (
+        "id",
+        "purpose",
+        "status",
+        "ticket",
+        "model_name",
+        "input_tokens",
+        "output_tokens",
+        "latency_ms",
+        "created_at",
+    )
+    
+    list_filter = ("purpose", "status")
+    list_select_related = ("ticket",)
+
+    # Logs are written by the code only. Nobody adds or edits them by hand,
+    # otherwise they could no longer be trusted. Deleting old logs is allowed.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

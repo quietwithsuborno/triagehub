@@ -7,7 +7,7 @@ token; the real JWT flow is tested in accounts/tests.py.
 
 from rest_framework.test import APITestCase
 from accounts.models import User
-from .models import Ticket, Comment, Category
+from .models import Ticket, Comment, Category, AILog
 
 
 class TicketPermissionTests(APITestCase):
@@ -397,3 +397,36 @@ class CategoryAPITests(APITestCase):
         # 405 Method Not Allowed: POST does not exist on this endpoint for anyone.
         self.assertEqual(response.status_code, 405)
         self.assertFalse(Category.objects.filter(name="Hacked").exists())
+
+
+
+class AILogModelTests(APITestCase):
+    """The AI log model on its own, without any AI call."""
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.ticket = Ticket.objects.create(
+            title="Cannot login", description="Error 500", created_by=self.rahim
+        )
+
+    def test_log_is_linked_to_its_ticket(self):
+        log = AILog.objects.create(
+            ticket=self.ticket,
+            purpose=AILog.Purpose.TRIAGE,
+            status=AILog.Status.SUCCESS,
+            input_tokens=1200,
+            output_tokens=80,
+        )
+        self.assertEqual(list(self.ticket.ai_logs.all()), [log])
+
+    def test_deleting_ticket_keeps_its_logs(self):
+        log = AILog.objects.create(
+            ticket=self.ticket,
+            purpose=AILog.Purpose.TRIAGE,
+            status=AILog.Status.ERROR,
+            error_message="Timeout",
+        )
+        self.ticket.delete()
+        log.refresh_from_db()
+        self.assertIsNone(log.ticket)
+        self.assertEqual(log.error_message, "Timeout")

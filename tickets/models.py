@@ -112,3 +112,58 @@ class Comment(models.Model):
 
     def __str__(self):
         return f"Comment by {self.author} on ticket #{self.ticket_id}"
+
+
+class AILog(models.Model):
+    """One record for every call to the AI, successful or not.
+
+    Used to debug bad answers, to see why a fallback happened, and to measure
+    the real token usage (and so the real cost) of the AI features.
+    """
+
+    class Purpose(models.TextChoices):
+        TRIAGE = "triage", "Triage"  # Phase 5 adds more purposes here
+
+    class Status(models.TextChoices):
+        SUCCESS = "success", "Success"  # valid answer, used on the ticket
+        ERROR = "error", "Error"  # no answer: timeout, network, bad key
+        INVALID = "invalid", "Invalid"  # answer came back but failed validation
+
+    # SET_NULL: deleting a ticket keeps its logs, so cost history stays complete.
+    # null=True also allows logs that belong to no ticket (Phase 5 questions).
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ai_logs",
+    )
+
+    purpose = models.CharField(max_length=20, choices=Purpose.choices)
+
+    status = models.CharField(max_length=20, choices=Status.choices)
+
+    provider = models.CharField(max_length=50, blank=True)
+
+    model_name = models.CharField(max_length=100, blank=True)
+
+    # Token counts and timing are unknown when the call fails, hence null.
+    input_tokens = models.PositiveIntegerField(null=True, blank=True)
+
+    output_tokens = models.PositiveIntegerField(null=True, blank=True)
+
+    latency_ms = models.PositiveIntegerField(null=True, blank=True)
+
+    # The AI's raw text, kept so an INVALID answer can be inspected later.
+    raw_response = models.TextField(blank=True)
+
+    error_message = models.TextField(blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]  # newest first
+        verbose_name = "AI log"
+
+    def __str__(self):
+        return f"{self.purpose} {self.status} (ticket #{self.ticket_id})"
