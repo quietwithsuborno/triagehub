@@ -1,11 +1,12 @@
 """AI triage: the prompt, and the clients that send it to an AI.
 
-Phase 4, Step 1 builds only these pieces. Checking the AI's answer, the
-fallback and saving the result on the ticket come in the next steps.
+Steps 1 and 2 of Phase 4 build these pieces: the prompt, the AI clients and
+the check of the AI's answer. The fallback and saving the result on the
+ticket come in the next steps.
 """
 
+import json
 from dataclasses import dataclass
-
 from .models import Ticket
 
 # What each priority means, so the AI and our agents use the same scale.
@@ -96,3 +97,70 @@ class FakeAIClient(AIClient):
             input_tokens=100,
             output_tokens=20,
         )
+
+
+class TriageValidationError(ValueError):
+    """The AI answered, but the answer cannot be used (AILog status INVALID)."""
+
+
+@dataclass
+class TriageResult:
+    """A checked AI answer, safe to put on a ticket."""
+
+    category_name: str | None  # None means "no category fits"
+    priority: str
+    summary: str
+
+
+SUMMARY_MAX_LENGTH = 300  # same as Ticket.ai_summary max_length
+
+
+def parse_triage_response(text, category_names):
+    """Check the AI's raw text and return a TriageResult.
+
+    Raises TriageValidationError if anything is wrong. Only small things are
+    fixed here (spaces, upper or lower case). The meaning of the answer is
+    never guessed: an unknown category is rejected, not mapped to a near one.
+    """
+    # The AI sometimes adds words or ```json fences around the JSON, so keep
+    # only the part from the first "{" to the last "}".
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end < start:
+        raise TriageValidationError("No JSON object in the answer.")
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as error:
+        raise TriageValidationError(f"Answer is not valid JSON: {error}")
+
+    # Category: null, or one of our names in any upper or lower case.
+    category = data.get("category")
+    if category is None:
+        category_name = None
+    elif isinstance(category, str):
+        by_lowercase = {name.lower(): name for name in category_names}
+        category_name = by_lowercase.get(category.strip().lower())
+        if category_name is None:
+            raise TriageValidationError(f"Unknown category: {category!r}")
+    else:
+        raise TriageValidationError("Category must be text or null.")
+
+    # Priority: exactly one of the model's values.
+    priority = data.get("priority")
+    if not isinstance(priority, str):
+        raise TriageValidationError("Priority is missing or not text.")
+    priority = priority.strip().lower()
+    if priority not in Ticket.Priority.values:
+        raise TriageValidationError(f"Unknown priority: {priority!r}")
+
+    # Summary: some text, short enough for the database field.
+    summary = data.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise TriageValidationError("Summary is missing or empty.")
+    summary = summary.strip()
+    if len(summary) > SUMMARY_MAX_LENGTH:
+        raise TriageValidationError(
+            f"Summary is {len(summary)} characters, the limit is {SUMMARY_MAX_LENGTH}."
+        )
+
+    return TriageResult(category_name, priority, summary)
