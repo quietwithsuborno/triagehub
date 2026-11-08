@@ -8,7 +8,8 @@ token; the real JWT flow is tested in accounts/tests.py.
 from rest_framework.test import APITestCase
 from accounts.models import User
 from .models import Ticket, Comment, Category, AILog
-
+from .triage import FakeAIClient, build_triage_prompt
+from django.test import SimpleTestCase
 
 class TicketPermissionTests(APITestCase):
     """Who can see, create, change and delete which tickets."""
@@ -430,3 +431,39 @@ class AILogModelTests(APITestCase):
         log.refresh_from_db()
         self.assertIsNone(log.ticket)
         self.assertEqual(log.error_message, "Timeout")
+
+
+class TriagePromptTests(SimpleTestCase):
+    """The triage prompt and the fake AI client (no database needed)."""
+
+    def setUp(self):
+        self.instructions, self.ticket_text = build_triage_prompt(
+            "Cannot login", "Error 500 since morning", ["Account", "Billing", "Bug"]
+        )
+
+    def test_prompt_lists_every_category(self):
+        self.assertIn("Account, Billing, Bug", self.instructions)
+
+    # Guards against drift: if a new priority is added to the model,
+    # the AI must be told about it too.
+    def test_prompt_lists_every_priority_value(self):
+        for value in Ticket.Priority.values:
+            self.assertIn(f"- {value}:", self.instructions)
+
+    def test_customer_text_stays_out_of_instructions(self):
+        self.assertTrue(self.ticket_text.startswith("<ticket>"))
+        self.assertTrue(self.ticket_text.endswith("</ticket>"))
+        self.assertIn("Cannot login", self.ticket_text)
+        self.assertNotIn("Cannot login", self.instructions)
+
+    def test_fake_client_returns_its_text_and_records_the_call(self):
+        client = FakeAIClient(text='{"priority": "high"}')
+        response = client.complete(self.instructions, self.ticket_text)
+        self.assertEqual(response.text, '{"priority": "high"}')
+        self.assertEqual(response.provider, "fake")
+        self.assertEqual(client.calls, [(self.instructions, self.ticket_text)])
+
+    def test_fake_client_can_simulate_a_failure(self):
+        client = FakeAIClient(error=TimeoutError("AI took too long"))
+        with self.assertRaises(TimeoutError):
+            client.complete(self.instructions, self.ticket_text)

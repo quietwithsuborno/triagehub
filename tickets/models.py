@@ -158,7 +158,7 @@ class AILog(models.Model):
     raw_response = models.TextField(blank=True)
 
     error_message = models.TextField(blank=True)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
