@@ -8,7 +8,12 @@ token; the real JWT flow is tested in accounts/tests.py.
 from rest_framework.test import APITestCase
 from accounts.models import User
 from .models import Ticket, Comment, Category, AILog
-from .triage import FakeAIClient, build_triage_prompt
+from .triage import (
+    FakeAIClient,
+    TriageValidationError,
+    build_triage_prompt,
+    parse_triage_response,
+)
 from django.test import SimpleTestCase
 
 
@@ -467,3 +472,106 @@ class TriagePromptTests(SimpleTestCase):
         client = FakeAIClient(error=TimeoutError("AI took too long"))
         with self.assertRaises(TimeoutError):
             client.complete(self.instructions, self.ticket_text)
+
+
+class TriageValidationTests(SimpleTestCase):
+    """The check of the AI's answer: what is accepted, fixed or rejected."""
+
+    CATEGORIES = ["Account", "Billing", "Bug"]
+
+    def parse(self, text):
+        return parse_triage_response(text, self.CATEGORIES)
+
+    def assertRejected(self, text, reason):
+        # assertRaisesMessage also checks that the error explains the reason.
+        with self.assertRaisesMessage(TriageValidationError, reason):
+            self.parse(text)
+
+    # --- accepted ---
+
+    def test_valid_answer_is_accepted(self):
+        result = self.parse(
+            '{"category": "Billing", "priority": "high", "summary": "Charged twice."}'
+        )
+        self.assertEqual(result.category_name, "Billing")
+        self.assertEqual(result.priority, "high")
+        self.assertEqual(result.summary, "Charged twice.")
+
+    def test_extra_words_and_code_fence_around_json_are_ignored(self):
+        text = (
+            "Here is the triage:\n```json\n"
+            '{"category": "Bug", "priority": "low", "summary": "Typo on page."}'
+            "\n```"
+        )
+        self.assertEqual(self.parse(text).category_name, "Bug")
+
+    def test_case_and_spaces_are_fixed(self):
+        result = self.parse(
+            '{"category": " billing ", "priority": " URGENT ", "summary": " Down. "}'
+        )
+        self.assertEqual(result.category_name, "Billing")  # our exact spelling
+        self.assertEqual(result.priority, "urgent")
+        self.assertEqual(result.summary, "Down.")
+
+    def test_null_category_is_allowed(self):
+        result = self.parse(
+            '{"category": null, "priority": "low", "summary": "General question."}'
+        )
+        self.assertIsNone(result.category_name)
+
+    # Boundary: exactly the limit must still pass.
+    def test_summary_of_300_characters_is_allowed(self):
+        summary = "a" * 300
+        result = self.parse(
+            f'{{"category": "Bug", "priority": "low", "summary": "{summary}"}}'
+        )
+        self.assertEqual(len(result.summary), 300)
+
+    # --- rejected ---
+
+    def test_answer_without_json_is_rejected(self):
+        self.assertRejected("Sorry, I cannot help with that.", "No JSON object")
+
+    def test_broken_json_is_rejected(self):
+        self.assertRejected("{category: Bug}", "not valid JSON")
+
+    def test_unknown_category_is_rejected(self):
+        self.assertRejected(
+            '{"category": "Payment", "priority": "high", "summary": "x"}',
+            "Unknown category",
+        )
+
+    def test_category_that_is_not_text_is_rejected(self):
+        self.assertRejected(
+            '{"category": 2, "priority": "high", "summary": "x"}',
+            "Category must be text",
+        )
+
+    def test_unknown_priority_is_rejected(self):
+        self.assertRejected(
+            '{"category": "Bug", "priority": "critical", "summary": "x"}',
+            "Unknown priority",
+        )
+
+    def test_missing_priority_is_rejected(self):
+        self.assertRejected(
+            '{"category": "Bug", "summary": "x"}', "Priority is missing"
+        )
+
+    def test_missing_summary_is_rejected(self):
+        self.assertRejected(
+            '{"category": "Bug", "priority": "low"}', "Summary is missing"
+        )
+
+    def test_blank_summary_is_rejected(self):
+        self.assertRejected(
+            '{"category": "Bug", "priority": "low", "summary": "   "}',
+            "Summary is missing",
+        )
+
+    def test_summary_over_300_characters_is_rejected(self):
+        summary = "a" * 301
+        self.assertRejected(
+            f'{{"category": "Bug", "priority": "low", "summary": "{summary}"}}',
+            "the limit is 300",
+        )
