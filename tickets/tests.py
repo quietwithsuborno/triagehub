@@ -11,6 +11,7 @@ from .models import Ticket, Comment, Category, AILog
 from .triage import FakeAIClient, build_triage_prompt
 from django.test import SimpleTestCase
 
+
 class TicketPermissionTests(APITestCase):
     """Who can see, create, change and delete which tickets."""
 
@@ -398,7 +399,6 @@ class CategoryAPITests(APITestCase):
         # 405 Method Not Allowed: POST does not exist on this endpoint for anyone.
         self.assertEqual(response.status_code, 405)
         self.assertFalse(Category.objects.filter(name="Hacked").exists())
-
 
 
 class AILogModelTests(APITestCase):

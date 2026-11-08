@@ -52,7 +52,7 @@ class AILogAdmin(admin.ModelAdmin):
         "latency_ms",
         "created_at",
     )
-    
+
     list_filter = ("purpose", "status")
     list_select_related = ("ticket",)
 
