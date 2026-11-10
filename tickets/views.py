@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
+from .triage import triage_ticket
 
 
 class TicketViewSet(viewsets.ModelViewSet):
@@ -48,18 +49,24 @@ class TicketViewSet(viewsets.ModelViewSet):
         Customers cannot triage their own ticket: status, priority, category
         and assignee are reset to safe defaults whatever they sent. Agents and
         admins keep the values they chose (for example a ticket taken by phone).
+
+        Then the AI triage fills in what it may (see triage_ticket). It runs
+        after saving because the AI log needs the ticket's id, and it never
+        stops the ticket from being created.
         """
         user = self.request.user
         if user.is_support_staff:
-            serializer.save(created_by=user)
+            ticket = serializer.save(created_by=user)
         else:
-            serializer.save(
+            ticket = serializer.save(
                 created_by=user,
                 status=Ticket.Status.OPEN,
                 priority=Ticket.Priority.MEDIUM,
                 category=None,
                 assigned_to=None,
             )
+        # Same object the serializer returns, so the response shows the AI's values.
+        triage_ticket(ticket)
 
     @action(
         detail=True,
