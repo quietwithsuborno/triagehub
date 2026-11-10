@@ -2,7 +2,8 @@
 
 Phase 4 builds this in steps: the prompt and AI clients (Step 1), the check
 of the AI's answer (Step 2) and run_triage, which joins them and falls back
-safely (Step 3). Saving the result on the ticket comes in Step 4.
+safely (Step 3), and triage_ticket, which puts the result on a new ticket
+(Step 4). The real AI provider comes in Step 5.
 """
 
 import json
@@ -218,3 +219,35 @@ def run_triage(ticket, client):
     log.status = AILog.Status.SUCCESS
     log.save()
     return result
+
+
+def get_ai_client():
+    """Return the AI client to use for triage, or None when AI is off.
+
+    Step 5 connects a real AI provider here. Until then there is none, so
+    every new ticket keeps its default values (the fallback). Tests replace
+    this function with one that returns a FakeAIClient.
+    """
+    return None
+
+
+def triage_ticket(ticket):
+    """Run the AI triage on a just-saved ticket and store the result on it.
+
+    Customer tickets get category, priority and summary from the AI. Support
+    staff already chose category and priority themselves, so their tickets
+    only get the summary. With no usable answer, the ticket is not changed.
+    """
+    result = run_triage(ticket, get_ai_client())
+    if result is None:
+        return
+
+    ticket.ai_summary = result.summary
+    changed_fields = ["ai_summary"]
+    if not ticket.created_by.is_support_staff:
+        # filter(name=None) matches nothing, so a null category gives None.
+        ticket.category = Category.objects.filter(name=result.category_name).first()
+        ticket.priority = result.priority
+        changed_fields += ["category", "priority"]
+    # update_fields writes only these columns, not the whole row again.
+    ticket.save(update_fields=changed_fields + ["updated_at"])
