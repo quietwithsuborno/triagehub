@@ -1,10 +1,11 @@
-"""API tests for tickets, comments, filters, docs and categories.
+"""Tests for tickets, comments, filters, docs, categories and AI triage.
 
 Users in these tests: rahim is a customer (role user), karim is an agent,
 jamal is a second customer. force_authenticate logs a user in without a real
 token; the real JWT flow is tested in accounts/tests.py.
 """
 
+from unittest import mock
 from rest_framework.test import APITestCase
 from accounts.models import User
 from .models import Ticket, Comment, Category, AILog
@@ -637,3 +638,71 @@ class RunTriageTests(APITestCase):
         instructions, ticket_text = client.calls[0]
         self.assertIn("Billing, Bug", instructions)
         self.assertIn("My card was charged twice.", ticket_text)
+
+
+class TicketTriageAPITests(APITestCase):
+    """Creating a ticket through the API runs the AI triage (with a fake AI).
+
+    mock.patch swaps get_ai_client for the length of one request, so the real
+    view code runs unchanged but talks to a FakeAIClient.
+    """
+
+    VALID_ANSWER = (
+        '{"category": "Billing", "priority": "high", "summary": "Charged twice."}'
+    )
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.billing = Category.objects.create(name="Billing")
+        self.bug = Category.objects.create(name="Bug")
+
+    def create_ticket(self, user, ai, **extra_fields):
+        """POST a new ticket as user, with ai as the AI client."""
+        self.client.force_authenticate(user=user)
+        data = {
+            "title": "Double payment",
+            "description": "My card was charged twice.",
+            **extra_fields,
+        }
+        with mock.patch("tickets.triage.get_ai_client", return_value=ai):
+            return self.client.post("/api/v1/tickets/", data)
+
+    def test_customer_ticket_gets_the_ai_values(self):
+        response = self.create_ticket(self.rahim, FakeAIClient(text=self.VALID_ANSWER))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["category"], self.billing.id)
+        self.assertEqual(response.data["priority"], "high")
+        self.assertEqual(response.data["ai_summary"], "Charged twice.")
+        # The database has them too, not only the response.
+        ticket = Ticket.objects.get(id=response.data["id"])
+        self.assertEqual(ticket.priority, "high")
+
+    def test_ai_error_still_creates_the_ticket_with_defaults(self):
+        ai = FakeAIClient(error=TimeoutError("AI took too long"))
+        response = self.create_ticket(self.rahim, ai)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(response.data["category"])
+        self.assertEqual(response.data["priority"], "medium")
+        self.assertEqual(response.data["ai_summary"], "")
+        self.assertEqual(AILog.objects.get().status, AILog.Status.ERROR)
+
+    def test_invalid_ai_answer_still_creates_the_ticket_with_defaults(self):
+        response = self.create_ticket(self.rahim, FakeAIClient(text="Sorry."))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["priority"], "medium")
+        self.assertEqual(AILog.objects.get().status, AILog.Status.INVALID)
+
+    def test_agent_ticket_keeps_agent_choices_and_gets_summary(self):
+        response = self.create_ticket(
+            self.karim,
+            FakeAIClient(text=self.VALID_ANSWER),
+            priority="urgent",
+            category=self.bug.id,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["priority"], "urgent")  # not the AI's "high"
+        self.assertEqual(response.data["category"], self.bug.id)  # not Billing
+        self.assertEqual(response.data["ai_summary"], "Charged twice.")
