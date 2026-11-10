@@ -1,13 +1,14 @@
 """AI triage: the prompt, and the clients that send it to an AI.
 
-Steps 1 and 2 of Phase 4 build these pieces: the prompt, the AI clients and
-the check of the AI's answer. The fallback and saving the result on the
-ticket come in the next steps.
+Phase 4 builds this in steps: the prompt and AI clients (Step 1), the check
+of the AI's answer (Step 2) and run_triage, which joins them and falls back
+safely (Step 3). Saving the result on the ticket comes in Step 4.
 """
 
 import json
+import time
 from dataclasses import dataclass
-from .models import Ticket
+from .models import Ticket, AILog, Category
 
 # What each priority means, so the AI and our agents use the same scale.
 PRIORITY_GUIDE = {
@@ -164,3 +165,56 @@ def parse_triage_response(text, category_names):
         )
 
     return TriageResult(category_name, priority, summary)
+
+
+def run_triage(ticket, client):
+    """Ask the AI to triage one saved ticket. Return a TriageResult or None.
+
+    None means "use the fallback": the ticket keeps its default values. The AI
+    can never make this function crash, so a slow or broken AI can never stop
+    a ticket from being created. Every call is written to AILog.
+    """
+    if client is None:  # AI triage is turned off
+        return None
+
+    # Read the categories now, so a category added in the admin is used at once.
+    category_names = list(Category.objects.values_list("name", flat=True))
+    instructions, ticket_text = build_triage_prompt(
+        ticket.title, ticket.description, category_names
+    )
+    log = AILog(ticket=ticket, purpose=AILog.Purpose.TRIAGE)
+
+    # monotonic() is a stopwatch: unlike the wall clock, it never jumps.
+    started = time.monotonic()
+    try:
+        response = client.complete(instructions, ticket_text)
+    # Deliberately broad: whatever goes wrong inside the AI provider (timeout,
+    # network, bad key, an unexpected bug), the ticket must still be saved.
+    # The error is not hidden; it is written to the log below.
+    except Exception as error:
+        response = None
+        log.error_message = f"{type(error).__name__}: {error}"
+    log.latency_ms = round((time.monotonic() - started) * 1000)
+
+    if response is None:
+        log.status = AILog.Status.ERROR
+        log.save()
+        return None
+
+    log.provider = response.provider
+    log.model_name = response.model_name
+    log.input_tokens = response.input_tokens
+    log.output_tokens = response.output_tokens
+    log.raw_response = response.text
+
+    try:
+        result = parse_triage_response(response.text, category_names)
+    except TriageValidationError as error:
+        log.status = AILog.Status.INVALID
+        log.error_message = str(error)
+        log.save()
+        return None
+
+    log.status = AILog.Status.SUCCESS
+    log.save()
+    return result
