@@ -13,6 +13,7 @@ from .triage import (
     TriageValidationError,
     build_triage_prompt,
     parse_triage_response,
+    run_triage,
 )
 from django.test import SimpleTestCase
 
@@ -575,3 +576,64 @@ class TriageValidationTests(SimpleTestCase):
             f'{{"category": "Bug", "priority": "low", "summary": "{summary}"}}',
             "the limit is 300",
         )
+
+
+class RunTriageTests(APITestCase):
+    """run_triage with a fake AI: the result it returns and the log it writes."""
+
+    VALID_ANSWER = (
+        '{"category": "billing", "priority": "high", "summary": "Charged twice."}'
+    )
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        Category.objects.create(name="Billing")
+        Category.objects.create(name="Bug")
+        self.ticket = Ticket.objects.create(
+            title="Double payment",
+            description="My card was charged twice.",
+            created_by=self.rahim,
+        )
+
+    def test_no_client_means_no_call_and_no_log(self):
+        self.assertIsNone(run_triage(self.ticket, None))
+        self.assertEqual(AILog.objects.count(), 0)
+
+    def test_valid_answer_returns_result_and_logs_success(self):
+        result = run_triage(self.ticket, FakeAIClient(text=self.VALID_ANSWER))
+        self.assertEqual(result.category_name, "Billing")
+        self.assertEqual(result.priority, "high")
+
+        log = AILog.objects.get()  # exactly one log, or this line fails
+        self.assertEqual(log.status, AILog.Status.SUCCESS)
+        self.assertEqual(log.ticket, self.ticket)
+        self.assertEqual(log.provider, "fake")
+        self.assertEqual(log.input_tokens, 100)
+        self.assertEqual(log.raw_response, self.VALID_ANSWER)
+        self.assertIsNotNone(log.latency_ms)
+
+    def test_ai_error_returns_none_and_logs_error(self):
+        client = FakeAIClient(error=TimeoutError("AI took too long"))
+        self.assertIsNone(run_triage(self.ticket, client))
+
+        log = AILog.objects.get()
+        self.assertEqual(log.status, AILog.Status.ERROR)
+        self.assertEqual(log.error_message, "TimeoutError: AI took too long")
+        self.assertIsNone(log.input_tokens)  # no answer, so no token count
+
+    def test_invalid_answer_returns_none_and_logs_invalid(self):
+        answer = '{"category": "Payment", "priority": "high", "summary": "x"}'
+        self.assertIsNone(run_triage(self.ticket, FakeAIClient(text=answer)))
+
+        log = AILog.objects.get()
+        self.assertEqual(log.status, AILog.Status.INVALID)
+        self.assertIn("Unknown category", log.error_message)
+        self.assertEqual(log.raw_response, answer)  # kept for debugging
+        self.assertEqual(log.input_tokens, 100)  # the call still cost tokens
+
+    def test_prompt_uses_categories_from_the_database(self):
+        client = FakeAIClient(text=self.VALID_ANSWER)
+        run_triage(self.ticket, client)
+        instructions, ticket_text = client.calls[0]
+        self.assertIn("Billing, Bug", instructions)
+        self.assertIn("My card was charged twice.", ticket_text)
