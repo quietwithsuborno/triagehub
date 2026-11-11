@@ -174,3 +174,15 @@ SPECTACULAR_SETTINGS = {
     "SCHEMA_PATH_PREFIX": r"/api/v1",
     "SERVE_INCLUDE_SCHEMA": False,  # hide the /api/schema/ endpoint from the docs
 }
+
+# --- AI triage (Phase 4) ---
+# Which AI to use is set in .env, not in the code. Any provider with an
+# OpenAI-compatible API works (Google Gemini, OpenAI, Groq and others): change
+# these lines in .env and restart, no code change needed.
+# Off unless AI_TRIAGE_ENABLED=True, so the project also runs without a key.
+AI_TRIAGE_ENABLED = os.environ.get("AI_TRIAGE_ENABLED", "False") == "True"
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "")
+AI_API_KEY = os.environ.get("AI_API_KEY", "")
+AI_MODEL = os.environ.get("AI_MODEL", "")
+# Seconds to wait for the AI. After that the ticket is saved with defaults.
+AI_TIMEOUT_SECONDS = float(os.environ.get("AI_TIMEOUT_SECONDS", "10"))
