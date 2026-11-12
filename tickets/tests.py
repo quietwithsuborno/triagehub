@@ -11,12 +11,15 @@ from accounts.models import User
 from .models import Ticket, Comment, Category, AILog
 from .triage import (
     FakeAIClient,
+    OpenAICompatibleClient,
     TriageValidationError,
     build_triage_prompt,
+    get_ai_client,
     parse_triage_response,
     run_triage,
 )
-from django.test import SimpleTestCase
+from django.conf import settings
+from django.test import SimpleTestCase, override_settings
 
 
 class TicketPermissionTests(APITestCase):
@@ -706,3 +709,62 @@ class TicketTriageAPITests(APITestCase):
         self.assertEqual(response.data["priority"], "urgent")  # not the AI's "high"
         self.assertEqual(response.data["category"], self.bug.id)  # not Billing
         self.assertEqual(response.data["ai_summary"], "Charged twice.")
+
+
+
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+class AIClientSettingsTests(SimpleTestCase):
+    """get_ai_client reads .env settings; the real client, without network."""
+
+    # Proves the guard at the end of settings.py: tests never call a real AI,
+    # even when .env turns AI triage on.
+    def test_ai_is_off_while_tests_run(self):
+        self.assertFalse(settings.AI_TRIAGE_ENABLED)
+
+    @override_settings(AI_TRIAGE_ENABLED=False)
+    def test_ai_off_gives_no_client(self):
+        self.assertIsNone(get_ai_client())
+
+    @override_settings(
+        AI_TRIAGE_ENABLED=True, AI_BASE_URL=GEMINI_URL, AI_API_KEY="", AI_MODEL="m"
+    )
+    def test_missing_key_gives_no_client_and_a_warning(self):
+        with self.assertLogs("tickets.triage", level="WARNING"):
+            self.assertIsNone(get_ai_client())
+
+    @override_settings(
+        AI_TRIAGE_ENABLED=True,
+        AI_BASE_URL=GEMINI_URL,
+        AI_API_KEY="test-key",
+        AI_MODEL="gemini-test",
+    )
+    def test_full_settings_give_the_real_client(self):
+        client = get_ai_client()
+        self.assertIsInstance(client, OpenAICompatibleClient)
+        self.assertEqual(client.provider, "generativelanguage.googleapis.com")
+        self.assertEqual(client.model, "gemini-test")
+
+    def test_real_client_sends_two_messages_and_reads_tokens(self):
+        client = OpenAICompatibleClient(GEMINI_URL, "test-key", "gemini-test", 10)
+        # Replace the openai library's client with a mock: no network call.
+        client.client = mock.Mock()
+        fake_response = mock.Mock()
+        fake_response.choices = [mock.Mock(message=mock.Mock(content="answer"))]
+        fake_response.usage = mock.Mock(prompt_tokens=321, completion_tokens=12)
+        client.client.chat.completions.create.return_value = fake_response
+
+        response = client.complete("our rules", "<ticket>...</ticket>")
+
+        client.client.chat.completions.create.assert_called_once_with(
+            model="gemini-test",
+            messages=[
+                {"role": "system", "content": "our rules"},
+                {"role": "user", "content": "<ticket>...</ticket>"},
+            ],
+        )
+        self.assertEqual(response.text, "answer")
+        self.assertEqual(response.input_tokens, 321)
+        self.assertEqual(response.output_tokens, 12)
