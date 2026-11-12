@@ -2,14 +2,21 @@
 
 Phase 4 builds this in steps: the prompt and AI clients (Step 1), the check
 of the AI's answer (Step 2) and run_triage, which joins them and falls back
-safely (Step 3), and triage_ticket, which puts the result on a new ticket
-(Step 4). The real AI provider comes in Step 5.
+safely (Step 3), triage_ticket, which puts the result on a new ticket
+(Step 4), and the real AI client, chosen from settings (Step 5).
 """
 
 import json
+import logging
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
+
+from django.conf import settings
+from openai import OpenAI
 from .models import Ticket, AILog, Category
+
+logger = logging.getLogger(__name__)
 
 # What each priority means, so the AI and our agents use the same scale.
 PRIORITY_GUIDE = {
@@ -221,14 +228,63 @@ def run_triage(ticket, client):
     return result
 
 
-def get_ai_client():
-    """Return the AI client to use for triage, or None when AI is off.
+class OpenAICompatibleClient(AIClient):
+    """A real AI, reached through an OpenAI-compatible API.
 
-    Step 5 connects a real AI provider here. Until then there is none, so
-    every new ticket keeps its default values (the fallback). Tests replace
-    this function with one that returns a FakeAIClient.
+    Many providers speak this API (Google Gemini, OpenAI, Groq and others).
+    Which one is used depends only on base_url, api_key and model, which come
+    from settings (.env), so changing provider needs no code change.
     """
-    return None
+
+    def __init__(self, base_url, api_key, model, timeout):
+        # max_retries=0: no automatic second try. A retry would make the
+        # customer wait twice as long; our fallback handles a failed call.
+        self.client = OpenAI(
+            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0
+        )
+        self.model = model
+        # The provider's host name, e.g. generativelanguage.googleapis.com.
+        self.provider = (urlparse(base_url).hostname or "unknown")[:50]
+
+    def complete(self, instructions, ticket_text):
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": ticket_text},
+            ],
+        )
+        usage = response.usage  # some providers may leave this out
+        return AIResponse(
+            text=response.choices[0].message.content or "",
+            provider=self.provider,
+            model_name=self.model,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+
+def get_ai_client():
+    """Return the AI client set up in settings (.env), or None when AI is off.
+
+    AI is used only when AI_TRIAGE_ENABLED is True and the base URL, key and
+    model are all set, so a half-filled .env can never break ticket creation.
+    Tests replace this function with one that returns a FakeAIClient.
+    """
+    if not settings.AI_TRIAGE_ENABLED:
+        return None
+    if not (settings.AI_BASE_URL and settings.AI_API_KEY and settings.AI_MODEL):
+        logger.warning(
+            "AI triage is enabled, but AI_BASE_URL, AI_API_KEY or AI_MODEL "
+            "is empty. Tickets will use the default values."
+        )
+        return None
+    return OpenAICompatibleClient(
+        base_url=settings.AI_BASE_URL,
+        api_key=settings.AI_API_KEY,
+        model=settings.AI_MODEL,
+        timeout=settings.AI_TIMEOUT_SECONDS,
+    )
 
 
 def triage_ticket(ticket):

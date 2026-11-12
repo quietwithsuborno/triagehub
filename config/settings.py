@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -186,3 +187,9 @@ AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "")
 # Seconds to wait for the AI. After that the ticket is saved with defaults.
 AI_TIMEOUT_SECONDS = float(os.environ.get("AI_TIMEOUT_SECONDS", "10"))
+
+
+# Tests must never call a real AI (cost, network, different answers each
+# time), even when .env turns it on. Tests that need an AI use a fake one.
+if len(sys.argv) > 1 and sys.argv[1] == "test":
+    AI_TRIAGE_ENABLED = False
