@@ -710,7 +710,16 @@ class TicketTriageAPITests(APITestCase):
         self.assertEqual(response.data["category"], self.bug.id)  # not Billing
         self.assertEqual(response.data["ai_summary"], "Charged twice.")
 
+    def test_description_of_5000_characters_is_accepted(self):
+        response = self.create_ticket(self.rahim, None, description="a" * 5000)
+        self.assertEqual(response.status_code, 201, response.data)
 
+    def test_description_over_5000_characters_is_rejected(self):
+        ai = FakeAIClient(text=self.VALID_ANSWER)
+        response = self.create_ticket(self.rahim, ai, description="a" * 5001)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("description", response.data)
+        self.assertEqual(ai.calls, [])  # the AI was never asked
 
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"

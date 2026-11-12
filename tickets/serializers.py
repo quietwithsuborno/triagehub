@@ -49,6 +49,10 @@ class TicketSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+        # Every description is sent to the AI, so a limit keeps the cost of one
+        # ticket small and the text within what the AI can read. 5000
+        # characters is about two pages, plenty for a support request.
+        extra_kwargs = {"description": {"max_length": 5000}}
 
     def validate_assigned_to(self, value):
         """Only agents and admins can be assigned a ticket.
