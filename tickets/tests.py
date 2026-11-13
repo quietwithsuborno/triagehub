@@ -721,6 +721,19 @@ class TicketTriageAPITests(APITestCase):
         self.assertIn("description", response.data)
         self.assertEqual(ai.calls, [])  # the AI was never asked
 
+    def test_unexpected_triage_error_still_returns_201(self):
+        self.client.force_authenticate(user=self.rahim)
+        # Patch where views looks the name up: tickets.views, not tickets.triage.
+        with mock.patch(
+            "tickets.views.triage_ticket", side_effect=RuntimeError("a bug")
+        ):
+            with self.assertLogs("tickets.views", level="ERROR"):
+                response = self.client.post(
+                    "/api/v1/tickets/", {"title": "T", "description": "D"}
+                )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(Ticket.objects.filter(id=response.data["id"]).exists())
+
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 

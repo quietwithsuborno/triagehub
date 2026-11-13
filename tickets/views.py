@@ -1,5 +1,6 @@
 """API views for tickets, their comments, and categories."""
 
+import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -7,6 +8,8 @@ from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
 from .triage import triage_ticket
+
+logger = logging.getLogger(__name__)
 
 
 class TicketViewSet(viewsets.ModelViewSet):
@@ -65,8 +68,17 @@ class TicketViewSet(viewsets.ModelViewSet):
                 category=None,
                 assigned_to=None,
             )
-        # Same object the serializer returns, so the response shows the AI's values.
-        triage_ticket(ticket)
+
+        # triage_ticket already survives any AI failure. This also covers a bug
+        # in our own triage code or a database error: the ticket is already
+        # saved, so the customer must get 201, not 500 (after a 500 they would
+        # send the same ticket again).
+        try:
+            triage_ticket(ticket)
+        except Exception:
+            logger.exception("AI triage failed for ticket %s", ticket.pk)
+            # Show what is really in the database, not half-changed values.
+            ticket.refresh_from_db()
 
     @action(
         detail=True,
