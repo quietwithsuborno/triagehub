@@ -20,6 +20,8 @@ from .triage import (
 )
 from django.conf import settings
 from django.test import SimpleTestCase, override_settings
+from django.core.cache import cache
+from rest_framework.throttling import SimpleRateThrottle
 
 
 class TicketPermissionTests(APITestCase):
@@ -790,3 +792,39 @@ class AIClientSettingsTests(SimpleTestCase):
         self.assertEqual(response.text, "answer")
         self.assertEqual(response.input_tokens, 321)
         self.assertEqual(response.output_tokens, 12)
+
+
+class ThrottleTests(APITestCase):
+    """Speed limits: too many requests in a short time get 429.
+
+    Tests normally run with very high limits (see TESTING in settings.py).
+    Here mock.patch.dict sets low limits for one test only.
+    """
+
+    def setUp(self):
+        # Throttling counts requests in the cache. Start every test from zero.
+        cache.clear()
+
+    def test_too_many_login_attempts_get_429(self):
+        data = {"username": "nobody", "password": "wrong-password"}
+        with mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, {"anon": "3/minute"}):
+            for _ in range(3):
+                response = self.client.post("/api/v1/auth/login/", data)
+                self.assertEqual(response.status_code, 401)
+            response = self.client.post("/api/v1/auth/login/", data)
+        self.assertEqual(response.status_code, 429)
+
+    def test_too_many_new_tickets_get_429_but_reading_still_works(self):
+        rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.client.force_authenticate(user=rahim)
+        data = {"title": "T", "description": "D"}
+        with mock.patch.dict(
+            SimpleRateThrottle.THROTTLE_RATES, {"ticket_create": "2/hour"}
+        ):
+            for _ in range(2):
+                response = self.client.post("/api/v1/tickets/", data)
+                self.assertEqual(response.status_code, 201)
+            response = self.client.post("/api/v1/tickets/", data)
+            self.assertEqual(response.status_code, 429)
+            # The stricter limit is only for creating; the list still opens.
+            self.assertEqual(self.client.get("/api/v1/tickets/").status_code, 200)

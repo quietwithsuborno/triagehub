@@ -4,12 +4,19 @@ import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
 from .triage import triage_ticket
 
 logger = logging.getLogger(__name__)
+
+
+class TicketCreateThrottle(UserRateThrottle):
+    """Limits how many tickets one user can create ("ticket_create" rate)."""
+
+    scope = "ticket_create"
 
 
 class TicketViewSet(viewsets.ModelViewSet):
@@ -25,6 +32,16 @@ class TicketViewSet(viewsets.ModelViewSet):
     # ?status=open&priority=high&category=2 and ?search=word
     filterset_fields = ["status", "priority", "category"]
     search_fields = ["title", "description"]
+
+    def get_throttles(self):
+        """The general limits for every request, plus a stricter one on create.
+
+        Each new ticket may call the paid AI, so creating has its own limit.
+        """
+        throttles = super().get_throttles()
+        if self.action == "create":
+            throttles.append(TicketCreateThrottle())
+        return throttles
 
     def get_queryset(self):
         """Support staff see every ticket; customers see only their own.

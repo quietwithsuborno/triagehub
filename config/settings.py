@@ -165,6 +165,20 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Speed limits. Over the limit, the API answers 429 Too Many Requests.
+    # anon: requests without a login, counted per IP address (login and
+    # register), so nobody can guess passwords or create accounts in bulk.
+    # user: any request by one logged-in user.
+    # ticket_create: new tickets per user; each one may call the paid AI.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "20/minute",
+        "user": "120/minute",
+        "ticket_create": "30/hour",
+    },
 }
 
 # Swagger / OpenAPI docs served at /api/docs/.
@@ -189,7 +203,13 @@ AI_MODEL = os.environ.get("AI_MODEL", "")
 AI_TIMEOUT_SECONDS = float(os.environ.get("AI_TIMEOUT_SECONDS", "10"))
 
 
-# Tests must never call a real AI (cost, network, different answers each
-# time), even when .env turns it on. Tests that need an AI use a fake one.
-if len(sys.argv) > 1 and sys.argv[1] == "test":
+TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
+if TESTING:
+    # Tests must never call a real AI (cost, network, different answers each
+    # time), even when .env turns it on. Tests that need an AI use a fake one.
     AI_TRIAGE_ENABLED = False
+    # Tests send many requests in a few seconds from one address, so the real
+    # limits would block them. The throttling tests set their own low limits.
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+        scope: "10000/minute" for scope in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+    }
