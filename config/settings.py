@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "accounts",
     "tickets",
+    "knowledge",
     "django_filters",
     "drf_spectacular",
 ]
