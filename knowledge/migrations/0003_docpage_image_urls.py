@@ -6,13 +6,13 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('knowledge', '0002_initial'),
+        ("knowledge", "0002_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='docpage',
-            name='image_urls',
+            model_name="docpage",
+            name="image_urls",
             field=models.JSONField(blank=True, default=list),
         ),
     ]

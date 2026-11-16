@@ -8,12 +8,14 @@ cuts the text into chunks and stores the page and its chunks in the database.
 """
 
 import hashlib
-from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse
+import time
+import requests
 
+from dataclasses import dataclass, field
+from urllib import robotparser
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from django.db import transaction
-
 from .models import DocChunk, DocPage
 
 # Parts of a Docusaurus page that belong to the site, not to the page itself.
@@ -203,3 +205,71 @@ def save_page(url, page):
         for position, (heading, text) in enumerate(split_into_chunks(page.sections))
     )
     return "created" if created else "updated"
+
+
+# --- Fetching pages from the website (Step 2, part D) ---
+
+# Who we are, sent with every request, so the site owner can see it is us.
+USER_AGENT = "TriageHubDocsBot/1.0 (internship project, knowledge assistant)"
+REQUEST_TIMEOUT = 15  # seconds to wait for one page before giving up
+PAUSE_SECONDS = 1.0  # wait between pages, so we never put load on their server
+
+
+def fetch_html(url):
+    """Download one page and return its HTML. Raises an error on 404, 500..."""
+    response = requests.get(
+        url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def find_links(html, page_url, start_url):
+    """Addresses linked from this page that are inside the start_url section."""
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for anchor in soup.find_all("a", href=True):
+        # Full address, without "#part" or "?query" (same page, other spot).
+        address = urljoin(page_url, anchor["href"]).split("#")[0].split("?")[0]
+        if address.startswith(start_url) and address not in links:
+            links.append(address)
+    return links
+
+
+def crawl(start_url, limit=50, pause=PAUSE_SECONDS, report=print):
+    """Fetch and save pages, starting at start_url and following its links.
+
+    Only pages below start_url are visited, at most `limit` of them, with a
+    pause between pages, and never a page that robots.txt forbids. Returns
+    how many pages were created, updated, unchanged, skipped or failed.
+    """
+    if not start_url.endswith("/"):
+        start_url += "/"  # so ".../lifecycle" does not also match ".../lifecycle-2"
+    robots = robotparser.RobotFileParser(urljoin(start_url, "/robots.txt"))
+    robots.read()
+
+    counts = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0}
+    queue, seen, visited = [start_url], {start_url}, 0
+    while queue and visited < limit:
+        url = queue.pop(0)
+        if not robots.can_fetch(USER_AGENT, url):
+            counts["skipped"] += 1
+            report(f"skipped (robots.txt): {url}")
+            continue
+
+        visited += 1
+        try:
+            html = fetch_html(url)
+        except requests.RequestException as error:
+            counts["failed"] += 1
+            report(f"failed: {url} ({error})")
+        else:
+            result = save_page(url, extract_page(html, url))
+            counts[result] += 1
+            report(f"{result}: {url}")
+            for link in find_links(html, url, start_url):
+                if link not in seen:
+                    seen.add(link)
+                    queue.append(link)
+        time.sleep(pause)
+    return counts

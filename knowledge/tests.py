@@ -1,5 +1,10 @@
 """Tests for the knowledge base models, including a real vector search."""
 
+import requests
+
+from io import StringIO
+from unittest import mock
+from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import TestCase, SimpleTestCase
 from pgvector.django import CosineDistance
@@ -7,6 +12,7 @@ from pgvector.django import CosineDistance
 from .models import DocChunk, DocPage
 from .ingest import (
     Section,
+    crawl,
     extract_page,
     module_from_url,
     save_page,
@@ -174,3 +180,91 @@ class SavePageTests(TestCase):
         self.assertIn("- Approve the order.\n- Close the order.", texts)
         # New chunks have no embedding yet: the old ones described old text.
         self.assertFalse(DocChunk.objects.filter(embedding__isnull=False).exists())
+
+
+# A pretend website for the crawl tests: address -> HTML. No internet needed.
+START = "https://docs.example.com/guide/"
+FAKE_SITE = {
+    START: """<article><h1>Guide</h1><p>Start page.</p>
+        <a href="/guide/a/">A</a>
+        <a href="/guide/b/#part">B, a spot inside the page</a>
+        <a href="/other/x/">Another section</a>
+        <a href="https://elsewhere.com/guide/">Another website</a></article>""",
+    START + "a/": """<article><h1>A</h1><p>Page A.</p>
+        <a href="/guide/">Back to the start</a>
+        <a href="/guide/b/">B again</a></article>""",
+    START + "b/": """<article><h1>B</h1><p>Page B.</p>
+        <a href="/guide/c/">C</a></article>""",
+    START + "c/": "<article><h1>C</h1><p>Page C.</p></article>",
+}
+
+
+class CrawlTests(SimpleTestCase):
+    """crawl with a fake website, fake robots.txt and a fake save_page.
+
+    save_page has its own tests above, so here it only records the call;
+    that also means these tests need no database.
+    """
+
+    def run_crawl(self, start=START, limit=50, blocked=(), broken=()):
+        """Run crawl; return (counts, fetched addresses, saved addresses)."""
+        fetched = []
+
+        def fake_fetch(url):
+            fetched.append(url)
+            if url in broken:
+                raise requests.ConnectionError("network down")
+            return FAKE_SITE[url]
+
+        with (
+            mock.patch("knowledge.ingest.fetch_html", side_effect=fake_fetch),
+            mock.patch("knowledge.ingest.robotparser.RobotFileParser") as robots,
+            mock.patch("knowledge.ingest.save_page", return_value="created") as save,
+        ):
+            robots.return_value.can_fetch.side_effect = (
+                lambda agent, url: url not in blocked
+            )
+            counts = crawl(start, limit=limit, pause=0, report=lambda message: None)
+        saved = [call.args[0] for call in save.call_args_list]
+        return counts, fetched, saved
+
+    def test_follows_links_inside_the_section_once_each(self):
+        counts, fetched, saved = self.run_crawl()
+        self.assertEqual(fetched, [START, START + "a/", START + "b/", START + "c/"])
+        self.assertEqual(saved, fetched)
+        self.assertEqual(counts["created"], 4)
+
+    def test_stops_at_the_limit(self):
+        counts, fetched, saved = self.run_crawl(limit=2)
+        self.assertEqual(fetched, [START, START + "a/"])
+        self.assertEqual(counts["created"], 2)
+
+    def test_skips_pages_that_robots_txt_forbids(self):
+        counts, fetched, saved = self.run_crawl(blocked={START + "b/"})
+        self.assertNotIn(START + "b/", fetched)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(counts["created"], 2)  # C is only linked from B
+
+    def test_a_failed_page_does_not_stop_the_crawl(self):
+        counts, fetched, saved = self.run_crawl(broken={START + "a/"})
+        self.assertEqual(counts["failed"], 1)
+        self.assertNotIn(START + "a/", saved)
+        self.assertIn(START + "c/", saved)
+
+    def test_adds_the_missing_slash_to_the_start_address(self):
+        counts, fetched, saved = self.run_crawl(start=START.rstrip("/"))
+        self.assertEqual(fetched[0], START)
+        self.assertEqual(counts["created"], 4)
+
+
+class FetchDocsCommandTests(SimpleTestCase):
+    def test_passes_the_address_and_limit_and_prints_the_totals(self):
+        totals = {"created": 3, "updated": 0, "unchanged": 1}
+        out = StringIO()
+        with mock.patch(
+            "knowledge.management.commands.fetch_docs.crawl", return_value=totals
+        ) as fake_crawl:
+            call_command("fetch_docs", START, "--limit", "5", stdout=out)
+        self.assertEqual(fake_crawl.call_args.args, (START,))
+        self.assertEqual(fake_crawl.call_args.kwargs["limit"], 5)
+        self.assertIn("Done: created 3, updated 0, unchanged 1", out.getvalue())
