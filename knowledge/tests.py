@@ -5,7 +5,13 @@ from django.test import TestCase, SimpleTestCase
 from pgvector.django import CosineDistance
 
 from .models import DocChunk, DocPage
-from .ingest import extract_page
+from .ingest import (
+    Section,
+    extract_page,
+    module_from_url,
+    save_page,
+    split_into_chunks,
+)
 
 
 class DocModelTests(TestCase):
@@ -119,3 +125,52 @@ class ExtractPageTests(SimpleTestCase):
         self.assertEqual(
             self.page.image_urls, ["https://docs.example.com/img/po-form.png"]
         )
+
+
+class SavePageTests(TestCase):
+    """Chunking and saving pages: created, unchanged and updated pages."""
+
+    def save(self, html=SAMPLE_PAGE):
+        return save_page(PAGE_URL, extract_page(html, PAGE_URL))
+
+    def test_module_comes_from_the_address(self):
+        self.assertEqual(module_from_url(PAGE_URL), "supply-chain")
+        self.assertEqual(module_from_url("https://docs.example.com/"), "")
+
+    def test_long_section_is_cut_between_lines(self):
+        line = " ".join(["word"] * 100)  # one line of 100 words
+        section = Section("Fields", "\n".join([line] * 4))  # 400 words
+        chunks = split_into_chunks([section], max_words=300)
+        self.assertEqual([len(text.split()) for _, text in chunks], [300, 100])
+        self.assertEqual([heading for heading, _ in chunks], ["Fields", "Fields"])
+
+    def test_new_page_is_created_with_its_chunks(self):
+        self.assertEqual(self.save(), "created")
+        page = DocPage.objects.get(url=PAGE_URL)
+        self.assertEqual(page.module, "supply-chain")
+        self.assertEqual(page.title, "Purchase Order (PO)")
+        self.assertEqual(page.image_urls, ["https://docs.example.com/img/po-form.png"])
+        headings = [chunk.heading for chunk in page.chunks.all()]
+        self.assertEqual(headings, ["", "New Purchase Order", "Actions"])
+
+    def test_same_page_again_changes_nothing_and_keeps_embeddings(self):
+        self.save()
+        chunk = DocChunk.objects.first()
+        chunk.embedding = [1.0, 0.0]
+        chunk.save()
+
+        self.assertEqual(self.save(), "unchanged")
+        chunk.refresh_from_db()  # still there, with its embedding
+        self.assertEqual(list(chunk.embedding), [1.0, 0.0])
+
+    def test_changed_page_gets_new_chunks(self):
+        self.save()
+        DocChunk.objects.update(embedding=[1.0, 0.0])
+        changed = SAMPLE_PAGE.replace("Cancel the order.", "Close the order.")
+
+        self.assertEqual(self.save(changed), "updated")
+        self.assertEqual(DocPage.objects.count(), 1)  # same page, not a second one
+        texts = [chunk.text for chunk in DocChunk.objects.all()]
+        self.assertIn("- Approve the order.\n- Close the order.", texts)
+        # New chunks have no embedding yet: the old ones described old text.
+        self.assertFalse(DocChunk.objects.filter(embedding__isnull=False).exists())
