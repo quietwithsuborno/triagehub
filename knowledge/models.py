@@ -49,6 +49,8 @@ class DocChunk(models.Model):
     # Which model made the embedding. Vectors from different models cannot be
     # compared, so changing the model means making every embedding again.
     embedding_model = models.CharField(max_length=100, blank=True)
+    # Set when the chunk was made from an image's description, empty for text.
+    image_url = models.URLField(max_length=500, blank=True)
 
     class Meta:
         ordering = ["page", "position"]
@@ -61,6 +63,7 @@ class DocChunk(models.Model):
 
     def __str__(self):
         return f"{self.page.title} #{self.position}"
+
 
 
 class ImageDescription(models.Model):

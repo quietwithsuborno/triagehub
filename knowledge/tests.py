@@ -17,6 +17,9 @@ from .ingest import (
     module_from_url,
     save_page,
     split_into_chunks,
+    PageContent, 
+    add_all_image_chunks, 
+    add_image_chunks
 )
 from tickets.models import AILog
 from tickets.triage import FakeAIClient
@@ -371,12 +374,88 @@ class DescribeImagesCommandTests(SimpleTestCase):
     def test_passes_the_limit_and_prints_the_totals(self):
         totals = {"described": 2, "failed": 0, "left": 5}
         out = StringIO()
-        with mock.patch(self.TARGET, return_value=totals) as fake:
+        with (
+            mock.patch(self.TARGET, return_value=totals) as fake,
+            mock.patch(
+                "knowledge.management.commands.describe_images.add_all_image_chunks",
+                return_value=4,
+            ),
+        ):
             call_command("describe_images", "--limit", "2", stdout=out)
         self.assertEqual(fake.call_args.kwargs["limit"], 2)
-        self.assertIn("Done: described 2, failed 0, left 5", out.getvalue())
+        self.assertIn(
+            "Done: described 2, failed 0, left 5, image chunks 4", out.getvalue()
+        )
 
     def test_missing_ai_settings_give_a_clear_error(self):
         with mock.patch(self.TARGET, side_effect=RuntimeError("AI is not set up")):
             with self.assertRaises(CommandError):
                 call_command("describe_images")
+
+                
+class ImageChunkTests(TestCase):
+    """Image descriptions become chunks after the page's text chunks."""
+
+    def setUp(self):
+        self.page = DocPage.objects.create(
+            url="https://docs.example.com/guide/po/",
+            module="guide",
+            title="Purchase Order",
+            content="Text.",
+            content_hash="abc",
+            image_urls=[IMG + "one.png", IMG + "two.png", IMG + "three.png"],
+        )
+        for position in (0, 1):
+            DocChunk.objects.create(page=self.page, position=position, text="Text.")
+        ImageDescription.objects.create(
+            url=IMG + "one.png",
+            description="Purchase Order screen.\nFields: Vendor, Branch.",
+            model_name="fake-model",
+        )
+        ImageDescription.objects.create(
+            url=IMG + "two.png", description="No useful content.", model_name="m"
+        )
+        # three.png has no description yet.
+
+    def image_chunks(self):
+        return list(self.page.chunks.exclude(image_url=""))
+
+    def test_useful_descriptions_become_chunks_after_the_text(self):
+        self.assertEqual(add_image_chunks(self.page), 1)  # two.png is useless
+        [chunk] = self.image_chunks()
+        self.assertEqual(chunk.position, 2)
+        self.assertEqual(chunk.image_url, IMG + "one.png")
+        self.assertEqual(chunk.heading, "Image: Purchase Order screen.")
+        self.assertIn('page "Purchase Order"', chunk.text)
+        self.assertIn("Fields: Vendor, Branch.", chunk.text)
+
+    def test_running_again_adds_nothing(self):
+        add_image_chunks(self.page)
+        self.assertEqual(add_image_chunks(self.page), 0)
+        self.assertEqual(self.page.chunks.count(), 3)
+
+    def test_a_later_description_is_added_at_the_end(self):
+        add_image_chunks(self.page)
+        ImageDescription.objects.create(
+            url=IMG + "three.png", description="A diagram.", model_name="m"
+        )
+        self.assertEqual(add_all_image_chunks(), 1)
+        self.assertEqual([c.position for c in self.image_chunks()], [2, 3])
+
+    def test_text_chunks_keep_their_embedding(self):
+        chunk = self.page.chunks.get(position=0)
+        chunk.embedding = [0.5, 0.25, 1.0]
+        chunk.save()
+        add_image_chunks(self.page)
+        chunk.refresh_from_db()
+        self.assertEqual(list(chunk.embedding), [0.5, 0.25, 1.0])
+
+    def test_a_changed_page_gets_its_image_chunks_back(self):
+        new_version = PageContent(
+            title="Purchase Order",
+            sections=[Section("", "New text.")],
+            image_urls=[IMG + "one.png"],
+        )
+        self.assertEqual(save_page(self.page.url, new_version), "updated")
+        chunks = list(self.page.chunks.all())
+        self.assertEqual([c.image_url for c in chunks], ["", IMG + "one.png"])

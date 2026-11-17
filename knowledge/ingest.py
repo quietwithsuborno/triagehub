@@ -10,13 +10,14 @@ cuts the text into chunks and stores the page and its chunks in the database.
 import hashlib
 import time
 import requests
-
 from dataclasses import dataclass, field
 from urllib import robotparser
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from django.db import transaction
+from django.db.models import Max
 from .models import DocChunk, DocPage
+from .models import DocChunk, DocPage, ImageDescription
 
 # Parts of a Docusaurus page that belong to the site, not to the page itself.
 SITE_PARTS = (
@@ -204,6 +205,8 @@ def save_page(url, page):
         DocChunk(page=doc, position=position, heading=heading, text=text)
         for position, (heading, text) in enumerate(split_into_chunks(page.sections))
     )
+
+    add_image_chunks(doc)  # descriptions that already exist go in at once
     return "created" if created else "updated"
 
 
@@ -273,3 +276,56 @@ def crawl(start_url, limit=50, pause=PAUSE_SECONDS, report=print):
                     queue.append(link)
         time.sleep(pause)
     return counts
+
+# --- Image descriptions as chunks (Step 2, part F6) ---
+
+
+def useful_descriptions(image_urls):
+    """{image address: description} for the page's described images.
+
+    In the page's order. Images without a description yet, and images the
+    AI found useless (a logo, a decoration), are left out.
+    """
+    found = dict(
+        ImageDescription.objects.filter(url__in=image_urls).values_list(
+            "url", "description"
+        )
+    )
+    return {
+        url: found[url]
+        for url in image_urls
+        if url in found and not found[url].lower().startswith("no useful content")
+    }
+
+
+def add_image_chunks(doc):
+    """Add one chunk per described image of the page that has no chunk yet.
+
+    The new chunks go after the existing ones. The text chunks are not
+    touched, so their embeddings are kept. Returns how many were added.
+    """
+    have = set(doc.chunks.exclude(image_url="").values_list("image_url", flat=True))
+    new = {
+        url: description
+        for url, description in useful_descriptions(doc.image_urls).items()
+        if url not in have
+    }
+    last = doc.chunks.aggregate(Max("position"))["position__max"]
+    start = 0 if last is None else last + 1
+    DocChunk.objects.bulk_create(
+        DocChunk(
+            page=doc,
+            position=start + number,
+            # The description's first line, e.g. "Purchase Order screen".
+            heading=("Image: " + description.split("\n")[0])[:300],
+            text=f'An image on the page "{doc.title}":\n{description}',
+            image_url=url,
+        )
+        for number, (url, description) in enumerate(new.items())
+    )
+    return len(new)
+
+
+def add_all_image_chunks():
+    """Run add_image_chunks for every page that has images. Returns the total."""
+    return sum(add_image_chunks(doc) for doc in DocPage.objects.all() if doc.image_urls)
