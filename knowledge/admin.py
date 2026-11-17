@@ -1,7 +1,7 @@
 """Django admin panel setup for the documentation knowledge base."""
 
 from django.contrib import admin
-from .models import DocChunk, DocPage
+from .models import DocChunk, DocPage, ImageDescription
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -38,3 +38,9 @@ class DocChunkAdmin(ReadOnlyAdmin):
     def has_embedding(self, obj):
         """A tick in the list when the chunk already has its embedding."""
         return obj.embedding is not None
+
+
+@admin.register(ImageDescription)
+class ImageDescriptionAdmin(ReadOnlyAdmin):
+    list_display = ("url", "model_name", "created_at")
+    search_fields = ("url", "description")

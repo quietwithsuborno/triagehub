@@ -793,6 +793,25 @@ class AIClientSettingsTests(SimpleTestCase):
         self.assertEqual(response.input_tokens, 321)
         self.assertEqual(response.output_tokens, 12)
 
+    def test_real_client_sends_an_image_as_a_data_address(self):
+        client = OpenAICompatibleClient(GEMINI_URL, "test-key", "gemini-test", 10)
+        client.client = mock.Mock()
+        fake_response = mock.Mock()
+        fake_response.choices = [mock.Mock(message=mock.Mock(content="A form"))]
+        fake_response.usage = mock.Mock(prompt_tokens=300, completion_tokens=50)
+        client.client.chat.completions.create.return_value = fake_response
+
+        response = client.describe_image("our rules", b"\x89PNG", "image/png")
+
+        messages = client.client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertEqual(messages[0], {"role": "system", "content": "our rules"})
+        image_part = messages[1]["content"][1]
+        self.assertEqual(
+            image_part["image_url"]["url"], "data:image/png;base64,iVBORw=="
+        )
+        self.assertEqual(response.text, "A form")
+        self.assertEqual(response.input_tokens, 300)
+
 
 class ThrottleTests(APITestCase):
     """Speed limits: too many requests in a short time get 429.

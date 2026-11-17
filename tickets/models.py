@@ -123,6 +123,7 @@ class AILog(models.Model):
 
     class Purpose(models.TextChoices):
         TRIAGE = "triage", "Triage"  # Phase 5 adds more purposes here
+        IMAGE_DESCRIPTION = "image_description", "Image description"
 
     class Status(models.TextChoices):
         SUCCESS = "success", "Success"  # valid answer, used on the ticket

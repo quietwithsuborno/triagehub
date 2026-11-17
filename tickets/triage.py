@@ -6,6 +6,7 @@ safely (Step 3), triage_ticket, which puts the result on a new ticket
 (Step 4), and the real AI client, chosen from settings (Step 5).
 """
 
+import base64
 import json
 import logging
 import time
@@ -83,6 +84,9 @@ class AIClient:
     def complete(self, instructions, ticket_text):
         raise NotImplementedError
 
+    def describe_image(self, instructions, image_bytes, mime_type):
+        raise NotImplementedError
+
 
 class FakeAIClient(AIClient):
     """A pretend AI for tests: returns a fixed answer, or raises an error.
@@ -106,6 +110,10 @@ class FakeAIClient(AIClient):
             input_tokens=100,
             output_tokens=20,
         )
+
+    def describe_image(self, instructions, image_bytes, mime_type):
+        # The image itself is not kept, only its type, to keep tests simple.
+        return self.complete(instructions, f"<image {mime_type}>")
 
 
 class TriageValidationError(ValueError):
@@ -247,12 +255,37 @@ class OpenAICompatibleClient(AIClient):
         self.provider = (urlparse(base_url).hostname or "unknown")[:50]
 
     def complete(self, instructions, ticket_text):
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
+        return self._send(
+            [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": ticket_text},
-            ],
+            ]
+        )
+
+    def describe_image(self, instructions, image_bytes, mime_type):
+        # The image travels inside the request as text (base64), in a
+        # "data:" address, so the AI does not have to download it itself.
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return self._send(
+            [
+                {"role": "system", "content": instructions},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this image."},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                        },
+                    ],
+                },
+            ]
+        )
+
+    def _send(self, messages):
+        """Send the messages to the AI and wrap its answer in an AIResponse."""
+        response = self.client.chat.completions.create(
+            model=self.model, messages=messages
         )
         usage = response.usage  # some providers may leave this out
         return AIResponse(

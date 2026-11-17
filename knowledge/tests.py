@@ -4,12 +4,12 @@ import requests
 
 from io import StringIO
 from unittest import mock
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.db import IntegrityError
 from django.test import TestCase, SimpleTestCase
 from pgvector.django import CosineDistance
-
-from .models import DocChunk, DocPage
+from .images import describe_new_images, fetch_image
+from .models import DocChunk, DocPage, ImageDescription
 from .ingest import (
     Section,
     crawl,
@@ -18,6 +18,8 @@ from .ingest import (
     save_page,
     split_into_chunks,
 )
+from tickets.models import AILog
+from tickets.triage import FakeAIClient
 
 
 class DocModelTests(TestCase):
@@ -268,3 +270,113 @@ class FetchDocsCommandTests(SimpleTestCase):
         self.assertEqual(fake_crawl.call_args.args, (START,))
         self.assertEqual(fake_crawl.call_args.kwargs["limit"], 5)
         self.assertIn("Done: created 3, updated 0, unchanged 1", out.getvalue())
+
+
+# Image addresses for the image tests.
+IMG = "https://docs.example.com/assets/images/"
+
+
+class DescribeImagesTests(TestCase):
+    """describe_new_images with a fake AI and fake downloads: no network, no cost."""
+
+    def setUp(self):
+        # two.png is on both pages; one.png was described in an earlier run.
+        pages = {"a": ["one.png", "two.png"], "b": ["two.png", "three.png"]}
+        for name, images in pages.items():
+            DocPage.objects.create(
+                url=f"https://docs.example.com/guide/{name}/",
+                module="guide",
+                title=name,
+                content="Text.",
+                content_hash=name,
+                image_urls=[IMG + image for image in images],
+            )
+        ImageDescription.objects.create(
+            url=IMG + "one.png", description="Old.", model_name="old-model"
+        )
+
+    def run_describe(self, client, limit=20):
+        with (
+            mock.patch("knowledge.images.get_image_client", return_value=client),
+            mock.patch(
+                "knowledge.images.fetch_image", return_value=(b"\x89PNG", "image/png")
+            ),
+        ):
+            return describe_new_images(
+                limit=limit, pause=0, report=lambda message: None
+            )
+
+    def test_describes_each_new_image_once(self):
+        client = FakeAIClient(text="  Purchase Order form with Vendor field.  ")
+        counts = self.run_describe(client)
+        self.assertEqual(counts, {"described": 2, "failed": 0, "left": 0})
+        self.assertEqual(len(client.calls), 2)  # two.png is read only once
+        saved = ImageDescription.objects.get(url=IMG + "two.png")
+        self.assertEqual(saved.description, "Purchase Order form with Vendor field.")
+        self.assertEqual(saved.model_name, "fake-model")
+        logs = AILog.objects.filter(
+            purpose=AILog.Purpose.IMAGE_DESCRIPTION, status=AILog.Status.SUCCESS
+        )
+        self.assertEqual(logs.count(), 2)
+
+    def test_stops_at_the_limit(self):
+        counts = self.run_describe(FakeAIClient(text="A form."), limit=1)
+        self.assertEqual(counts, {"described": 1, "failed": 0, "left": 1})
+
+    def test_ai_error_is_logged_and_the_image_waits_for_next_time(self):
+        counts = self.run_describe(FakeAIClient(error=TimeoutError("too slow")))
+        self.assertEqual(counts, {"described": 0, "failed": 2, "left": 2})
+        self.assertEqual(ImageDescription.objects.count(), 1)  # only the old one
+        log = AILog.objects.filter(status=AILog.Status.ERROR).first()
+        self.assertIn("TimeoutError", log.error_message)
+        self.assertIn(IMG, log.error_message)  # says which image failed
+
+    def test_empty_answer_is_invalid_and_not_saved(self):
+        counts = self.run_describe(FakeAIClient(text="   "))
+        self.assertEqual(counts["failed"], 2)
+        self.assertEqual(AILog.objects.filter(status=AILog.Status.INVALID).count(), 2)
+        self.assertEqual(ImageDescription.objects.count(), 1)
+
+    def test_free_limit_stops_the_run(self):
+        class FakeLimit(Exception):
+            pass
+
+        client = FakeAIClient(error=FakeLimit("429"))
+        with mock.patch("knowledge.images.RateLimitError", FakeLimit):
+            counts = self.run_describe(client)
+        self.assertEqual(len(client.calls), 1)  # did not try the second image
+        self.assertEqual(counts, {"described": 0, "failed": 0, "left": 2})
+
+    def test_without_ai_settings_it_refuses_to_run(self):
+        with self.assertRaises(RuntimeError):
+            self.run_describe(None)
+
+
+class FetchImageTests(SimpleTestCase):
+    def test_returns_the_bytes_and_the_type(self):
+        fake = mock.Mock(headers={"Content-Type": "image/png"}, content=b"\x89PNG")
+        with mock.patch("knowledge.images.requests.get", return_value=fake):
+            self.assertEqual(fetch_image(IMG + "one.png"), (b"\x89PNG", "image/png"))
+
+    def test_refuses_something_that_is_not_an_image(self):
+        fake = mock.Mock(headers={"Content-Type": "text/html; charset=utf-8"})
+        with mock.patch("knowledge.images.requests.get", return_value=fake):
+            with self.assertRaises(ValueError):
+                fetch_image(IMG + "missing.png")
+
+
+class DescribeImagesCommandTests(SimpleTestCase):
+    TARGET = "knowledge.management.commands.describe_images.describe_new_images"
+
+    def test_passes_the_limit_and_prints_the_totals(self):
+        totals = {"described": 2, "failed": 0, "left": 5}
+        out = StringIO()
+        with mock.patch(self.TARGET, return_value=totals) as fake:
+            call_command("describe_images", "--limit", "2", stdout=out)
+        self.assertEqual(fake.call_args.kwargs["limit"], 2)
+        self.assertIn("Done: described 2, failed 0, left 5", out.getvalue())
+
+    def test_missing_ai_settings_give_a_clear_error(self):
+        with mock.patch(self.TARGET, side_effect=RuntimeError("AI is not set up")):
+            with self.assertRaises(CommandError):
+                call_command("describe_images")

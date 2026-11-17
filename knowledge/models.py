@@ -61,3 +61,22 @@ class DocChunk(models.Model):
 
     def __str__(self):
         return f"{self.page.title} #{self.position}"
+
+
+class ImageDescription(models.Model):
+    """What the AI read in one documentation image (a screenshot or diagram).
+
+    Kept per image address, not per page: the same image can be on several
+    pages, and it is described only once.
+    """
+
+    url = models.URLField(max_length=500, unique=True)
+    description = models.TextField()
+    model_name = models.CharField(max_length=100)  # which AI model wrote it
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["url"]
+
+    def __str__(self):
+        return self.url

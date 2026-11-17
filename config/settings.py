@@ -209,6 +209,7 @@ if TESTING:
     # Tests must never call a real AI (cost, network, different answers each
     # time), even when .env turns it on. Tests that need an AI use a fake one.
     AI_TRIAGE_ENABLED = False
+    AI_API_KEY = ""  # so no other AI feature can reach a real AI in tests
     # Tests send many requests in a few seconds from one address, so the real
     # limits would block them. The throttling tests set their own low limits.
     REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
