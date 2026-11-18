@@ -833,6 +833,22 @@ class AIClientSettingsTests(SimpleTestCase):
         self.assertEqual(response.model_name, "embed-model")
         self.assertIsNone(response.input_tokens)
 
+    def test_real_client_keeps_the_order_when_an_index_is_missing(self):
+        client = OpenAICompatibleClient(GEMINI_URL, "test-key", "gemini-test", 10)
+        client.client = mock.Mock()
+        # Gemini leaves the index out of some answers.
+        client.client.embeddings.create.return_value = mock.Mock(
+            data=[
+                mock.Mock(index=0, embedding=[1.0, 0.0]),
+                mock.Mock(index=None, embedding=[0.0, 1.0]),
+            ],
+            usage=None,
+        )
+
+        response = client.embed(["first", "second"], "embed-model", 2)
+
+        self.assertEqual(response.vectors, [[1.0, 0.0], [0.0, 1.0]])
+
 
 class ThrottleTests(APITestCase):
     """Speed limits: too many requests in a short time get 429.

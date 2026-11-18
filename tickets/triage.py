@@ -311,8 +311,13 @@ class OpenAICompatibleClient(AIClient):
         response = self.client.embeddings.create(
             model=model, input=list(texts), dimensions=dimensions
         )
-        # Each answer carries its index; sort by it so vector i belongs to text i.
-        items = sorted(response.data, key=lambda item: item.index)
+        items = response.data
+        # OpenAI gives each answer its position (index). Gemini can leave it
+        # out (None), so sort only when every answer has one; otherwise the
+        # answers come in the same order as the texts that were sent.
+        if all(isinstance(item.index, int) for item in items):
+            items = sorted(items, key=lambda item: item.index)
+
         usage = response.usage  # Gemini leaves this out for embeddings
         return EmbeddingResponse(
             vectors=[item.embedding for item in items],
