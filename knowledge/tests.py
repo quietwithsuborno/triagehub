@@ -26,6 +26,7 @@ from .ingest import (
     split_into_chunks,
 )
 from .models import EMBEDDING_DIMENSIONS, DocChunk, DocPage, ImageDescription
+from .search import search_chunks
 
 
 def vector(*start):
@@ -586,3 +587,84 @@ class EmbedChunksCommandTests(SimpleTestCase):
         with mock.patch(self.TARGET, side_effect=RuntimeError("AI is not set up")):
             with self.assertRaises(CommandError):
                 call_command("embed_chunks")
+
+
+@override_settings(EMBEDDING_MODEL="test-embed")
+class SearchChunksTests(TestCase):
+    """search_chunks with a fake question embedding: no network, no cost."""
+
+    def setUp(self):
+        page = DocPage.objects.create(
+            url="https://docs.example.com/guide/po/",
+            module="guide",
+            title="Purchase Order",
+            content="Text.",
+            content_hash="abc",
+        )
+
+        def chunk(position, text, embedding=None, model="test-embed"):
+            return DocChunk.objects.create(
+                page=page,
+                position=position,
+                text=text,
+                embedding=embedding,
+                embedding_model=model if embedding else "",
+            )
+
+        # The question will point along the first number: vector(1.0).
+        self.far = chunk(0, "Far", vector(0.0, 1.0))  # another way
+        self.same = chunk(1, "Same", vector(1.0, 0.0))  # the same way
+        self.close = chunk(2, "Close", vector(0.9, 0.1))  # almost the same way
+        # Must be left out: made by another model, or not embedded yet.
+        chunk(3, "Old model", vector(1.0, 0.0), model="old-model")
+        chunk(4, "Not embedded")
+
+    def fake_client(self):
+        client = mock.Mock()
+        client.embed.return_value = EmbeddingResponse(
+            vectors=[vector(1.0)], provider="fake", model_name="test-embed"
+        )
+        return client
+
+    def search(self, question="How do I make a purchase order?", limit=5):
+        client = self.fake_client()
+        with mock.patch("knowledge.search.get_embedding_client", return_value=client):
+            return search_chunks(question, limit=limit), client
+
+    def test_the_closest_chunk_comes_first(self):
+        results, client = self.search()
+        self.assertEqual(
+            [result.chunk for result in results], [self.same, self.close, self.far]
+        )
+        self.assertAlmostEqual(results[0].score, 1.0, places=5)  # same meaning
+        self.assertAlmostEqual(results[2].score, 0.0, places=5)  # unrelated
+
+    def test_other_model_and_unembedded_chunks_are_left_out(self):
+        results, client = self.search()
+        texts = [result.chunk.text for result in results]
+        self.assertNotIn("Old model", texts)
+        self.assertNotIn("Not embedded", texts)
+
+    def test_stops_at_the_limit(self):
+        results, client = self.search(limit=2)
+        self.assertEqual([result.chunk for result in results], [self.same, self.close])
+
+    def test_the_question_is_trimmed_and_the_call_is_logged(self):
+        results, client = self.search("   How?   ")
+        self.assertEqual(client.embed.call_args.args[0], ["How?"])
+        self.assertEqual(
+            AILog.objects.filter(purpose=AILog.Purpose.EMBEDDING).count(), 1
+        )
+
+    def test_an_empty_or_too_long_question_is_refused_without_an_ai_call(self):
+        client = self.fake_client()
+        with mock.patch("knowledge.search.get_embedding_client", return_value=client):
+            for question in ["   ", "a" * 1001]:
+                with self.assertRaises(ValueError):
+                    search_chunks(question)
+        client.embed.assert_not_called()
+
+    def test_without_ai_settings_it_refuses_to_run(self):
+        with mock.patch("knowledge.search.get_embedding_client", return_value=None):
+            with self.assertRaises(RuntimeError):
+                search_chunks("How?")
