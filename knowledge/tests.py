@@ -1,28 +1,36 @@
 """Tests for the knowledge base models, including a real vector search."""
 
-import requests
-
 from io import StringIO
 from unittest import mock
+
+import requests
 from django.core.management import CommandError, call_command
-from django.db import IntegrityError
-from django.test import TestCase, SimpleTestCase
+from django.db import DataError, IntegrityError, transaction
+from django.test import SimpleTestCase, TestCase, override_settings
 from pgvector.django import CosineDistance
+
+from tickets.models import AILog
+from tickets.triage import EmbeddingResponse, FakeAIClient
+
+from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
-from .models import DocChunk, DocPage, ImageDescription
 from .ingest import (
+    PageContent,
     Section,
+    add_all_image_chunks,
+    add_image_chunks,
     crawl,
     extract_page,
     module_from_url,
     save_page,
     split_into_chunks,
-    PageContent, 
-    add_all_image_chunks, 
-    add_image_chunks
 )
-from tickets.models import AILog
-from tickets.triage import FakeAIClient
+from .models import EMBEDDING_DIMENSIONS, DocChunk, DocPage, ImageDescription
+
+
+def vector(*start):
+    """A full-size embedding for tests: the given numbers, then zeros."""
+    return list(start) + [0.0] * (EMBEDDING_DIMENSIONS - len(start))
 
 
 class DocModelTests(TestCase):
@@ -58,18 +66,22 @@ class DocModelTests(TestCase):
             self.make_chunk(0)
 
     def test_embedding_is_stored_and_read_back(self):
-        chunk = self.make_chunk(0, embedding=[0.5, 0.25, 1.0])
+        chunk = self.make_chunk(0, embedding=vector(0.5, 0.25, 1.0))
         chunk.refresh_from_db()
-        self.assertEqual(list(chunk.embedding), [0.5, 0.25, 1.0])
+        self.assertEqual(list(chunk.embedding), vector(0.5, 0.25, 1.0))
 
     # A first taste of Step 4: the database sorts chunks by closeness in meaning.
     def test_nearest_chunk_comes_first(self):
-        self.make_chunk(0, embedding=[0.0, 1.0])  # points another way: far
-        self.make_chunk(1, embedding=[1.0, 0.0])  # same direction as the question
-        self.make_chunk(2, embedding=[0.9, 0.1])  # almost the same direction
-        question = [1.0, 0.0]
+        self.make_chunk(0, embedding=vector(0.0, 1.0))  # points another way: far
+        self.make_chunk(1, embedding=vector(1.0, 0.0))  # same direction as the question
+        self.make_chunk(2, embedding=vector(0.9, 0.1))  # almost the same direction
+        question = vector(1.0, 0.0)
         nearest = DocChunk.objects.order_by(CosineDistance("embedding", question))
         self.assertEqual([c.position for c in nearest], [1, 2, 0])
+
+    def test_embedding_of_the_wrong_size_is_refused(self):
+        with self.assertRaises(DataError), transaction.atomic():
+            self.make_chunk(0, embedding=[0.5, 0.25, 1.0])
 
 
 SAMPLE_PAGE = """
@@ -167,16 +179,16 @@ class SavePageTests(TestCase):
     def test_same_page_again_changes_nothing_and_keeps_embeddings(self):
         self.save()
         chunk = DocChunk.objects.first()
-        chunk.embedding = [1.0, 0.0]
+        chunk.embedding = vector(1.0, 0.0)
         chunk.save()
 
         self.assertEqual(self.save(), "unchanged")
         chunk.refresh_from_db()  # still there, with its embedding
-        self.assertEqual(list(chunk.embedding), [1.0, 0.0])
+        self.assertEqual(list(chunk.embedding), vector(1.0, 0.0))
 
     def test_changed_page_gets_new_chunks(self):
         self.save()
-        DocChunk.objects.update(embedding=[1.0, 0.0])
+        DocChunk.objects.update(embedding=vector(1.0, 0.0))
         changed = SAMPLE_PAGE.replace("Cancel the order.", "Close the order.")
 
         self.assertEqual(self.save(changed), "updated")
@@ -392,7 +404,7 @@ class DescribeImagesCommandTests(SimpleTestCase):
             with self.assertRaises(CommandError):
                 call_command("describe_images")
 
-                
+
 class ImageChunkTests(TestCase):
     """Image descriptions become chunks after the page's text chunks."""
 
@@ -444,11 +456,11 @@ class ImageChunkTests(TestCase):
 
     def test_text_chunks_keep_their_embedding(self):
         chunk = self.page.chunks.get(position=0)
-        chunk.embedding = [0.5, 0.25, 1.0]
+        chunk.embedding = vector(0.5, 0.25, 1.0)
         chunk.save()
         add_image_chunks(self.page)
         chunk.refresh_from_db()
-        self.assertEqual(list(chunk.embedding), [0.5, 0.25, 1.0])
+        self.assertEqual(list(chunk.embedding), vector(0.5, 0.25, 1.0))
 
     def test_a_changed_page_gets_its_image_chunks_back(self):
         new_version = PageContent(
@@ -459,3 +471,118 @@ class ImageChunkTests(TestCase):
         self.assertEqual(save_page(self.page.url, new_version), "updated")
         chunks = list(self.page.chunks.all())
         self.assertEqual([c.image_url for c in chunks], ["", IMG + "one.png"])
+
+
+@override_settings(EMBEDDING_MODEL="test-embed")
+class EmbedChunksTests(TestCase):
+    """embed_new_chunks with a fake AI: no network, no cost."""
+
+    def setUp(self):
+        self.page = DocPage.objects.create(
+            url="https://docs.example.com/guide/po/",
+            module="guide",
+            title="Purchase Order",
+            content="Text.",
+            content_hash="abc",
+        )
+        # 25 chunks: one full batch of 20, then 5. Odd ones have a heading.
+        for position in range(25):
+            DocChunk.objects.create(
+                page=self.page,
+                position=position,
+                heading="Fields" if position % 2 else "",
+                text=f"Text {position}",
+            )
+
+    def run_embed(self, client, limit=200):
+        with mock.patch(
+            "knowledge.embeddings.get_embedding_client", return_value=client
+        ):
+            return embed_new_chunks(limit=limit, pause=0, report=lambda message: None)
+
+    def test_embeds_every_chunk_in_batches(self):
+        client = FakeAIClient()
+        counts = self.run_embed(client)
+        self.assertEqual(counts, {"embedded": 25, "failed": 0, "left": 0})
+        self.assertEqual([len(texts) for _, texts in client.calls], [20, 5])
+        self.assertFalse(DocChunk.objects.filter(embedding__isnull=True).exists())
+        self.assertEqual(
+            set(DocChunk.objects.values_list("embedding_model", flat=True)),
+            {"test-embed"},
+        )
+        logs = AILog.objects.filter(
+            purpose=AILog.Purpose.EMBEDDING, status=AILog.Status.SUCCESS
+        )
+        self.assertEqual(logs.count(), 2)
+
+    def test_text_sent_has_the_page_title_and_heading(self):
+        chunks = self.page.chunks.all()
+        self.assertEqual(chunk_text(chunks[0]), "Purchase Order\nText 0")
+        self.assertEqual(chunk_text(chunks[1]), "Purchase Order > Fields\nText 1")
+
+    def test_running_again_sends_nothing(self):
+        self.run_embed(FakeAIClient())
+        client = FakeAIClient()
+        counts = self.run_embed(client)
+        self.assertEqual(counts, {"embedded": 0, "failed": 0, "left": 0})
+        self.assertEqual(client.calls, [])
+
+    def test_chunks_from_another_model_are_done_again(self):
+        self.run_embed(FakeAIClient())
+        DocChunk.objects.update(embedding_model="old-model")
+        counts = self.run_embed(FakeAIClient())
+        self.assertEqual(counts["embedded"], 25)
+
+    def test_stops_at_the_limit(self):
+        client = FakeAIClient()
+        counts = self.run_embed(client, limit=5)
+        self.assertEqual(counts, {"embedded": 5, "failed": 0, "left": 20})
+        self.assertEqual([len(texts) for _, texts in client.calls], [5])
+
+    def test_wrong_number_of_embeddings_is_refused(self):
+        client = mock.Mock()
+        # Only one embedding, whatever the number of texts sent.
+        client.embed.return_value = EmbeddingResponse(
+            vectors=[vector(1.0)], provider="fake", model_name="test-embed"
+        )
+        counts = self.run_embed(client)
+        self.assertEqual(counts, {"embedded": 0, "failed": 25, "left": 25})
+        self.assertEqual(AILog.objects.filter(status=AILog.Status.INVALID).count(), 2)
+        self.assertFalse(DocChunk.objects.filter(embedding__isnull=False).exists())
+
+    def test_ai_error_leaves_the_chunks_for_next_time(self):
+        counts = self.run_embed(FakeAIClient(error=TimeoutError("too slow")))
+        self.assertEqual(counts, {"embedded": 0, "failed": 25, "left": 25})
+        log = AILog.objects.filter(status=AILog.Status.ERROR).first()
+        self.assertIn("TimeoutError", log.error_message)
+
+    def test_free_limit_stops_the_run(self):
+        class FakeLimit(Exception):
+            pass
+
+        client = FakeAIClient(error=FakeLimit("429"))
+        with mock.patch("knowledge.embeddings.RateLimitError", FakeLimit):
+            counts = self.run_embed(client)
+        self.assertEqual(len(client.calls), 1)  # did not try the second batch
+        self.assertEqual(counts, {"embedded": 0, "failed": 0, "left": 25})
+
+    def test_without_ai_settings_it_refuses_to_run(self):
+        with self.assertRaises(RuntimeError):
+            self.run_embed(None)
+
+
+class EmbedChunksCommandTests(SimpleTestCase):
+    TARGET = "knowledge.management.commands.embed_chunks.embed_new_chunks"
+
+    def test_passes_the_limit_and_prints_the_totals(self):
+        totals = {"embedded": 20, "failed": 0, "left": 93}
+        out = StringIO()
+        with mock.patch(self.TARGET, return_value=totals) as fake:
+            call_command("embed_chunks", "--limit", "20", stdout=out)
+        self.assertEqual(fake.call_args.kwargs["limit"], 20)
+        self.assertIn("Done: embedded 20, failed 0, left 93", out.getvalue())
+
+    def test_missing_ai_settings_give_a_clear_error(self):
+        with mock.patch(self.TARGET, side_effect=RuntimeError("AI is not set up")):
+            with self.assertRaises(CommandError):
+                call_command("embed_chunks")

@@ -74,6 +74,16 @@ class AIResponse:
     output_tokens: int | None = None
 
 
+@dataclass
+class EmbeddingResponse:
+    """What embed() gives back: one vector per text, plus facts for the AILog."""
+
+    vectors: list
+    provider: str
+    model_name: str
+    input_tokens: int | None = None
+
+
 class AIClient:
     """The shape every AI client must have.
 
@@ -85,6 +95,9 @@ class AIClient:
         raise NotImplementedError
 
     def describe_image(self, instructions, image_bytes, mime_type):
+        raise NotImplementedError
+
+    def embed(self, texts, model, dimensions):
         raise NotImplementedError
 
 
@@ -114,6 +127,18 @@ class FakeAIClient(AIClient):
     def describe_image(self, instructions, image_bytes, mime_type):
         # The image itself is not kept, only its type, to keep tests simple.
         return self.complete(instructions, f"<image {mime_type}>")
+
+    def embed(self, texts, model, dimensions):
+        texts = list(texts)
+        self.calls.append(("embed", texts))
+        if self.error is not None:
+            raise self.error
+        # The same simple vector for every text: [1.0, 0.0, 0.0, ...].
+        return EmbeddingResponse(
+            vectors=[[1.0] + [0.0] * (dimensions - 1) for _ in texts],
+            provider="fake",
+            model_name=model,
+        )
 
 
 class TriageValidationError(ValueError):
@@ -280,6 +305,20 @@ class OpenAICompatibleClient(AIClient):
                     ],
                 },
             ]
+        )
+
+    def embed(self, texts, model, dimensions):
+        response = self.client.embeddings.create(
+            model=model, input=list(texts), dimensions=dimensions
+        )
+        # Each answer carries its index; sort by it so vector i belongs to text i.
+        items = sorted(response.data, key=lambda item: item.index)
+        usage = response.usage  # Gemini leaves this out for embeddings
+        return EmbeddingResponse(
+            vectors=[item.embedding for item in items],
+            provider=self.provider,
+            model_name=model,
+            input_tokens=usage.prompt_tokens if usage else None,
         )
 
     def _send(self, messages):

@@ -9,6 +9,11 @@ question can find the chunks closest to it in meaning.
 from django.db import models
 from pgvector.django import VectorField
 
+# How many numbers each embedding has. The model can give 128 to 3072;
+# 768 is 4 times smaller than the full 3072 and loses little. Changing it
+# needs a migration and new embeddings for every chunk.
+EMBEDDING_DIMENSIONS = 768
+
 
 class DocPage(models.Model):
     """One documentation page, as fetched from the website."""
@@ -43,9 +48,10 @@ class DocChunk(models.Model):
     position = models.PositiveIntegerField()  # 0, 1, 2... order within the page
     heading = models.CharField(max_length=300, blank=True)  # its section heading
     text = models.TextField()
-    # The meaning as numbers. Empty until Step 3 creates it. No fixed size yet:
-    # it is set once we see how many numbers the embedding model returns.
-    embedding = VectorField(null=True, blank=True)
+
+    # The meaning as numbers, made by the embedding model (Step 3).
+    embedding = VectorField(dimensions=EMBEDDING_DIMENSIONS, null=True, blank=True)
+
     # Which model made the embedding. Vectors from different models cannot be
     # compared, so changing the model means making every embedding again.
     embedding_model = models.CharField(max_length=100, blank=True)
@@ -63,7 +69,6 @@ class DocChunk(models.Model):
 
     def __str__(self):
         return f"{self.page.title} #{self.position}"
-
 
 
 class ImageDescription(models.Model):

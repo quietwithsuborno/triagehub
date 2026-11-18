@@ -28,7 +28,7 @@ class Command(BaseCommand):
             )
         except RuntimeError as error:  # AI not set up in .env
             raise CommandError(error)
-        
+
         counts["image chunks"] = add_all_image_chunks()
         summary = ", ".join(f"{name} {number}" for name, number in counts.items())
         self.stdout.write(self.style.SUCCESS(f"Done: {summary}"))

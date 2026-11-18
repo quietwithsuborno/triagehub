@@ -277,6 +277,7 @@ def crawl(start_url, limit=50, pause=PAUSE_SECONDS, report=print):
         time.sleep(pause)
     return counts
 
+
 # --- Image descriptions as chunks (Step 2, part F6) ---
 
 

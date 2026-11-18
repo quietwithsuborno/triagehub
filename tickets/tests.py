@@ -812,6 +812,27 @@ class AIClientSettingsTests(SimpleTestCase):
         self.assertEqual(response.text, "A form")
         self.assertEqual(response.input_tokens, 300)
 
+    def test_real_client_embeds_several_texts_in_order(self):
+        client = OpenAICompatibleClient(GEMINI_URL, "test-key", "gemini-test", 10)
+        client.client = mock.Mock()
+        # The answers come back in the wrong order on purpose.
+        client.client.embeddings.create.return_value = mock.Mock(
+            data=[
+                mock.Mock(index=1, embedding=[0.0, 1.0]),
+                mock.Mock(index=0, embedding=[1.0, 0.0]),
+            ],
+            usage=None,
+        )
+
+        response = client.embed(["first", "second"], "embed-model", 2)
+
+        client.client.embeddings.create.assert_called_once_with(
+            model="embed-model", input=["first", "second"], dimensions=2
+        )
+        self.assertEqual(response.vectors, [[1.0, 0.0], [0.0, 1.0]])
+        self.assertEqual(response.model_name, "embed-model")
+        self.assertIsNone(response.input_tokens)
+
 
 class ThrottleTests(APITestCase):
     """Speed limits: too many requests in a short time get 429.

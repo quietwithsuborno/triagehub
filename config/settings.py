@@ -203,6 +203,10 @@ AI_MODEL = os.environ.get("AI_MODEL", "")
 # Seconds to wait for the AI. After that the ticket is saved with defaults.
 AI_TIMEOUT_SECONDS = float(os.environ.get("AI_TIMEOUT_SECONDS", "10"))
 
+# The model that turns text into embeddings (Phase 5). Same provider, URL and
+# key as above. Changing it means making every chunk's embedding again.
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "gemini-embedding-2")
+
 
 TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
 if TESTING:
