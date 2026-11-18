@@ -26,7 +26,7 @@ from .ingest import (
     split_into_chunks,
 )
 from .models import EMBEDDING_DIMENSIONS, DocChunk, DocPage, ImageDescription
-from .search import search_chunks
+from .search import SearchResult, search_chunks
 
 
 def vector(*start):
@@ -668,3 +668,28 @@ class SearchChunksTests(TestCase):
         with mock.patch("knowledge.search.get_embedding_client", return_value=None):
             with self.assertRaises(RuntimeError):
                 search_chunks("How?")
+
+
+class SearchDocsCommandTests(SimpleTestCase):
+    TARGET = "knowledge.management.commands.search_docs.search_chunks"
+
+    def test_prints_each_result_with_its_score_page_and_link(self):
+        page = DocPage(url="https://docs.example.com/guide/po/", title="Purchase Order")
+        chunk = DocChunk(
+            page=page, heading="Actions", text="Approve the order.\nCancel the order."
+        )
+        found = [SearchResult(chunk=chunk, score=0.8123)]
+        out = StringIO()
+        with mock.patch(self.TARGET, return_value=found) as fake:
+            call_command("search_docs", "How do I cancel?", "--limit", "3", stdout=out)
+        self.assertEqual(fake.call_args.args, ("How do I cancel?",))
+        self.assertEqual(fake.call_args.kwargs["limit"], 3)
+        printed = out.getvalue()
+        self.assertIn("1. 0.812  Purchase Order > Actions", printed)
+        self.assertIn("https://docs.example.com/guide/po/", printed)
+        self.assertIn("Approve the order. Cancel the order.", printed)
+
+    def test_a_bad_question_gives_a_clear_error(self):
+        with mock.patch(self.TARGET, side_effect=ValueError("the question is empty")):
+            with self.assertRaises(CommandError):
+                call_command("search_docs", " ")
