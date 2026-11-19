@@ -125,6 +125,7 @@ class AILog(models.Model):
         TRIAGE = "triage", "Triage"  # Phase 5 adds more purposes here
         IMAGE_DESCRIPTION = "image_description", "Image description"
         EMBEDDING = "embedding", "Embedding"
+        ANSWER = "answer", "Answer"
 
     class Status(models.TextChoices):
         SUCCESS = "success", "Success"  # valid answer, used on the ticket

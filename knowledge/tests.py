@@ -1,5 +1,6 @@
 """Tests for the knowledge base models, including a real vector search."""
 
+import json
 from io import StringIO
 from unittest import mock
 
@@ -12,6 +13,12 @@ from pgvector.django import CosineDistance
 from tickets.models import AILog
 from tickets.triage import EmbeddingResponse, FakeAIClient
 
+from .answer import (
+    NOT_FOUND_TEXT,
+    AnswerValidationError,
+    answer_question,
+    build_answer_prompt,
+)
 from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
 from .ingest import (
@@ -693,3 +700,143 @@ class SearchDocsCommandTests(SimpleTestCase):
         with mock.patch(self.TARGET, side_effect=ValueError("the question is empty")):
             with self.assertRaises(CommandError):
                 call_command("search_docs", " ")
+
+
+class AnswerPromptTests(SimpleTestCase):
+    """The prompt for answering: question and numbered excerpts, kept apart."""
+
+    def setUp(self):
+        page = DocPage(
+            url="https://docs.example.com/guide/pc/", title="Purchase Cancellation"
+        )
+        results = [
+            SearchResult(
+                chunk=DocChunk(page=page, heading="New Order", text="Party: Select."),
+                score=0.8,
+            ),
+            SearchResult(
+                chunk=DocChunk(page=page, text="Cancel orders here."), score=0.7
+            ),
+        ]
+        self.instructions, self.text = build_answer_prompt(
+            "PO kivabe cancel korbo?", results
+        )
+
+    def test_the_question_is_inside_its_tags(self):
+        self.assertIn("<question>\nPO kivabe cancel korbo?\n</question>", self.text)
+
+    def test_excerpts_are_numbered_with_page_and_heading(self):
+        self.assertIn(
+            "[1] Purchase Cancellation > New Order\nParty: Select.", self.text
+        )
+        self.assertIn("[2] Purchase Cancellation\nCancel orders here.", self.text)
+
+    def test_the_rules_ask_for_json_only_from_the_excerpts(self):
+        self.assertIn('"found"', self.instructions)
+        self.assertIn("ONLY the documentation excerpts", self.instructions)
+        self.assertIn("same language and script as the question", self.instructions)
+        # The customer's words never go into our instructions.
+        self.assertNotIn("kivabe", self.instructions)
+
+
+def ai_says(found, answer="", sources=()):
+    """A fake AI that gives this answer as JSON."""
+    reply = {"found": found, "answer": answer, "sources": list(sources)}
+    return FakeAIClient(text=json.dumps(reply))
+
+
+class AnswerQuestionTests(TestCase):
+    """answer_question with fake search results and a fake AI: no cost."""
+
+    def setUp(self):
+        cancel = DocPage(
+            url="https://docs.example.com/guide/pc/", title="Purchase Cancellation"
+        )
+        order = DocPage(
+            url="https://docs.example.com/guide/po/", title="Purchase Order"
+        )
+        self.results = [
+            SearchResult(
+                chunk=DocChunk(page=cancel, heading="New Order", text="Party: Select."),
+                score=0.8,
+            ),
+            SearchResult(
+                chunk=DocChunk(page=cancel, text="Cancel orders here."), score=0.7
+            ),
+            SearchResult(
+                chunk=DocChunk(page=order, text="Make orders here."), score=0.6
+            ),
+        ]
+
+    def ask(self, client, results=None):
+        found = self.results if results is None else results
+        with (
+            mock.patch("knowledge.answer.search_chunks", return_value=found),
+            mock.patch("knowledge.answer.get_answer_client", return_value=client),
+        ):
+            return answer_question("PO kivabe cancel korbo?")
+
+    def answer_log(self):
+        return AILog.objects.get(purpose=AILog.Purpose.ANSWER)
+
+    def test_an_answer_comes_with_its_page_links(self):
+        answer = self.ask(ai_says(True, "Open New Order.", [1, 2]))
+        self.assertTrue(answer.found)
+        self.assertEqual(answer.text, "Open New Order.")
+        # Excerpts 1 and 2 are from the same page: one link.
+        self.assertEqual(
+            answer.sources,
+            [
+                {
+                    "title": "Purchase Cancellation",
+                    "url": "https://docs.example.com/guide/pc/",
+                }
+            ],
+        )
+        self.assertEqual(self.answer_log().status, AILog.Status.SUCCESS)
+
+    def test_the_ai_gets_the_question_and_the_numbered_excerpts(self):
+        client = ai_says(False)
+        self.ask(client)
+        instructions, text = client.calls[0]
+        self.assertIn("PO kivabe cancel korbo?", text)
+        self.assertIn("[3] Purchase Order\nMake orders here.", text)
+
+    def test_not_found_gives_our_own_message(self):
+        answer = self.ask(ai_says(False))
+        self.assertFalse(answer.found)
+        self.assertEqual(answer.text, NOT_FOUND_TEXT)
+        self.assertEqual(answer.sources, [])
+
+    def test_no_chunks_means_not_found_without_an_ai_call(self):
+        client = ai_says(True, "unused", [1])
+        answer = self.ask(client, results=[])
+        self.assertFalse(answer.found)
+        self.assertEqual(client.calls, [])
+
+    def test_a_made_up_source_number_is_refused(self):
+        with self.assertRaises(AnswerValidationError):
+            self.ask(ai_says(True, "Yes.", [4]))  # there are only 3 excerpts
+        self.assertEqual(self.answer_log().status, AILog.Status.INVALID)
+        self.assertIn("4", self.answer_log().error_message)
+
+    def test_an_answer_without_sources_is_refused(self):
+        with self.assertRaises(AnswerValidationError):
+            self.ask(ai_says(True, "Yes.", []))
+
+    def test_json_inside_extra_words_is_still_read(self):
+        client = FakeAIClient(
+            text='Here it is:\n```json\n{"found": true, "answer": "Yes.", '
+            '"sources": [3]}\n```'
+        )
+        answer = self.ask(client)
+        self.assertEqual(answer.sources[0]["title"], "Purchase Order")
+
+    def test_an_ai_error_is_logged_and_raised(self):
+        with self.assertRaises(TimeoutError):
+            self.ask(FakeAIClient(error=TimeoutError("too slow")))
+        self.assertEqual(self.answer_log().status, AILog.Status.ERROR)
+
+    def test_without_ai_settings_it_refuses_to_run(self):
+        with self.assertRaises(RuntimeError):
+            self.ask(None)
