@@ -1,7 +1,11 @@
 """Tests for the knowledge base models, including a real vector search."""
 
+import csv
 import json
+import tempfile
+
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 import requests
@@ -27,6 +31,7 @@ from .answer import (
 )
 from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
+from .management.commands.evaluate_answers import QUESTIONS_FILE, check
 from .ingest import (
     PageContent,
     Section,
@@ -937,3 +942,68 @@ class AskApiTests(APITestCase):
             for _ in range(2):
                 self.assertEqual(self.ask("How?").status_code, 200)
             self.assertEqual(self.ask("How?").status_code, 429)
+
+
+class EvaluateAnswersTests(SimpleTestCase):
+    """The evaluation command, with a fake answer_question: no AI, no cost."""
+
+    MODULE = "knowledge.management.commands.evaluate_answers"
+    PDR = {"title": "Purchase Delivery Return", "url": "https://docs.example.com/pdr/"}
+
+    def test_check_compares_found_and_pages(self):
+        has_answer = {"pages": ["Purchase Delivery Return"]}
+        no_answer = {"pages": []}
+        order = {"title": "Purchase Order", "url": "https://docs.example.com/po/"}
+        self.assertEqual(check(has_answer, Answer(True, "a", [self.PDR])), "pass")
+        self.assertEqual(check(has_answer, Answer(False, "n")), "said not found")
+        self.assertEqual(
+            check(has_answer, Answer(True, "a", [order])), "wrong pages: Purchase Order"
+        )
+        self.assertEqual(check(no_answer, Answer(False, "n")), "pass")
+        self.assertEqual(
+            check(no_answer, Answer(True, "a", [order])),
+            "answered, but the docs have no answer",
+        )
+
+    def test_asks_every_question_and_writes_the_csv(self):
+        cases = [
+            {
+                "question": "PDR কী?",
+                "language": "Bangla",
+                "pages": ["Purchase Delivery Return"],
+            },
+            {"question": "help", "language": "English", "pages": []},
+        ]
+
+        def fake_answer(question):
+            if question == "help":
+                raise TimeoutError("too slow")  # one failure must not stop the rest
+            return Answer(True, "Return to the supplier.", [self.PDR])
+
+        with tempfile.TemporaryDirectory() as folder:
+            questions = Path(folder) / "questions.json"
+            questions.write_text(json.dumps(cases), encoding="utf-8")
+            output = Path(folder) / "results.csv"
+            out = StringIO()
+            with (
+                mock.patch(f"{self.MODULE}.QUESTIONS_FILE", questions),
+                mock.patch(f"{self.MODULE}.PAUSE_SECONDS", 0),
+                mock.patch(f"{self.MODULE}.answer_question", side_effect=fake_answer),
+            ):
+                call_command("evaluate_answers", "--output", str(output), stdout=out)
+            with open(output, encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.DictReader(file))
+
+        checks = [row["check"] for row in rows]
+        self.assertEqual(checks, ["pass", "error: TimeoutError"])
+        self.assertEqual(rows[0]["question"], "PDR কী?")
+        self.assertEqual(rows[0]["sources"], self.PDR["url"])
+        self.assertEqual(rows[1]["expected_pages"], "(none)")
+        self.assertIn("Done: 1 of 2 passed", out.getvalue())
+
+    def test_the_real_question_file_is_well_formed(self):
+        cases = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(len(cases), 20)
+        for case in cases:
+            self.assertEqual(set(case), {"question", "language", "pages"})
+            self.assertIn(case["language"], {"English", "Bangla", "Banglish"})
