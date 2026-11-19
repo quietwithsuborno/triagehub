@@ -6,10 +6,15 @@ from unittest import mock
 
 import requests
 from django.core.management import CommandError, call_command
+from django.core.cache import cache
+
 from django.db import DataError, IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from pgvector.django import CosineDistance
+from rest_framework.test import APITestCase
+from rest_framework.throttling import SimpleRateThrottle
 
+from accounts.models import User
 from tickets.models import AILog
 from tickets.triage import EmbeddingResponse, FakeAIClient
 
@@ -18,6 +23,7 @@ from .answer import (
     AnswerValidationError,
     answer_question,
     build_answer_prompt,
+    Answer,
 )
 from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
@@ -34,6 +40,7 @@ from .ingest import (
 )
 from .models import EMBEDDING_DIMENSIONS, DocChunk, DocPage, ImageDescription
 from .search import SearchResult, search_chunks
+from .views import UNAVAILABLE
 
 
 def vector(*start):
@@ -840,3 +847,93 @@ class AnswerQuestionTests(TestCase):
     def test_without_ai_settings_it_refuses_to_run(self):
         with self.assertRaises(RuntimeError):
             self.ask(None)
+
+
+ASK_URL = "/api/v1/knowledge/ask/"
+
+
+class AskApiTests(APITestCase):
+    """POST /api/v1/knowledge/ask/ with a fake answer_question: no AI, no cost."""
+
+    TARGET = "knowledge.views.answer_question"
+    FOUND = Answer(
+        found=True,
+        text="Open New Order.",
+        sources=[
+            {
+                "title": "Purchase Cancellation",
+                "url": "https://docs.example.com/guide/pc/",
+            }
+        ],
+    )
+
+    def setUp(self):
+        cache.clear()  # throttling counts requests in the cache: start from zero
+        rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.client.force_authenticate(user=rahim)
+
+    def ask(self, question):
+        return self.client.post(ASK_URL, {"question": question})
+
+    def test_an_answer_comes_back_with_its_sources(self):
+        with mock.patch(self.TARGET, return_value=self.FOUND) as fake:
+            response = self.ask("  PO kivabe cancel korbo?  ")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            {
+                "found": True,
+                "answer": "Open New Order.",
+                "sources": self.FOUND.sources,
+            },
+        )
+        fake.assert_called_once_with("PO kivabe cancel korbo?")  # spaces trimmed
+
+    def test_not_found_is_still_a_normal_answer(self):
+        not_found = Answer(found=False, text=NOT_FOUND_TEXT)
+        with mock.patch(self.TARGET, return_value=not_found):
+            response = self.ask("How do I process employee salary?")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["found"])
+        self.assertEqual(response.data["sources"], [])
+
+    def test_login_is_required(self):
+        self.client.force_authenticate(user=None)
+        with mock.patch(self.TARGET) as fake:
+            response = self.ask("How?")
+        self.assertEqual(response.status_code, 401)
+        fake.assert_not_called()
+
+    def test_an_empty_or_too_long_question_gets_400_without_an_ai_call(self):
+        with mock.patch(self.TARGET) as fake:
+            for question in ["   ", "a" * 1001]:
+                response = self.ask(question)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("question", response.data)
+        fake.assert_not_called()
+
+    def test_an_untrusted_ai_answer_gets_503(self):
+        error = AnswerValidationError("Unknown source number: 4")
+        with mock.patch(self.TARGET, side_effect=error):
+            response = self.ask("How?")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["detail"], UNAVAILABLE)
+
+    def test_an_ai_failure_gets_503_and_hides_the_inner_error(self):
+        error = TimeoutError("inner detail")
+        with mock.patch(self.TARGET, side_effect=error):
+            # The failure is written to the server log, with the details.
+            with self.assertLogs("knowledge.views", level="ERROR"):
+                response = self.ask("How?")
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("inner detail", str(response.data))
+
+    def test_too_many_questions_get_429(self):
+        rates = {"knowledge_ask": "2/hour"}
+        with (
+            mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, rates),
+            mock.patch(self.TARGET, return_value=self.FOUND),
+        ):
+            for _ in range(2):
+                self.assertEqual(self.ask("How?").status_code, 200)
+            self.assertEqual(self.ask("How?").status_code, 429)

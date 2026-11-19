@@ -10,6 +10,7 @@ urlpatterns = [
     # clients that still use v1.
     path("api/v1/auth/", include("accounts.urls")),
     path("api/v1/", include("tickets.urls")),
+    path("api/v1/", include("knowledge.urls")),
     # OpenAPI schema (machine-readable) and the Swagger page built from it.
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

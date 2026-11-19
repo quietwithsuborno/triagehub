@@ -179,6 +179,7 @@ REST_FRAMEWORK = {
         "anon": "20/minute",
         "user": "120/minute",
         "ticket_create": "30/hour",
+        "knowledge_ask": "20/hour",
     },
 }
 
