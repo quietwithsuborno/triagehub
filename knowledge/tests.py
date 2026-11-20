@@ -20,7 +20,7 @@ from rest_framework.throttling import SimpleRateThrottle
 
 from accounts.models import User
 from tickets.models import AILog
-from tickets.triage import EmbeddingResponse, FakeAIClient
+from tickets.triage import AIResponse, EmbeddingResponse, FakeAIClient
 
 from .answer import (
     NOT_FOUND_TEXT,
@@ -28,6 +28,9 @@ from .answer import (
     answer_question,
     build_answer_prompt,
     Answer,
+    ForeignScriptError,
+    foreign_letters,
+    parse_answer,
 )
 from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
@@ -749,6 +752,7 @@ class AnswerPromptTests(SimpleTestCase):
         self.assertIn("same language and script as the question", self.instructions)
         # The customer's words never go into our instructions.
         self.assertNotIn("kivabe", self.instructions)
+        self.assertIn("Use no other script", self.instructions)
 
 
 def ai_says(found, answer="", sources=()):
@@ -1007,3 +1011,89 @@ class EvaluateAnswersTests(SimpleTestCase):
         for case in cases:
             self.assertEqual(set(case), {"question", "language", "pages"})
             self.assertIn(case["language"], {"English", "Bangla", "Banglish"})
+
+
+class FakeBusy(Exception):
+    """Stands in for openai's InternalServerError (the AI is busy: 5xx)."""
+
+
+class AnswerRetryTests(TestCase):
+    """When the AI is busy for a moment, answer_question tries once more."""
+
+    def setUp(self):
+        page = DocPage(
+            url="https://docs.example.com/guide/pc/", title="Purchase Cancellation"
+        )
+        self.results = [
+            SearchResult(chunk=DocChunk(page=page, text="Cancel here."), score=0.8)
+        ]
+        reply = json.dumps({"found": True, "answer": "Cancel here.", "sources": [1]})
+        self.good = AIResponse(text=reply, provider="fake", model_name="fake-model")
+
+    def ask(self, *replies):
+        """Ask with a fake AI that gives these replies (or errors) in turn."""
+        client = mock.Mock()
+        client.complete.side_effect = list(replies)
+        with (
+            mock.patch("knowledge.answer.search_chunks", return_value=self.results),
+            mock.patch("knowledge.answer.get_answer_client", return_value=client),
+            mock.patch("knowledge.answer.InternalServerError", FakeBusy),
+            mock.patch("knowledge.answer.RETRY_WAIT_SECONDS", 0),
+        ):
+            try:
+                return answer_question("How do I cancel?")
+            finally:
+                self.calls = client.complete.call_count
+
+    def statuses(self):
+        logs = AILog.objects.filter(purpose=AILog.Purpose.ANSWER).order_by("id")
+        return [log.status for log in logs]
+
+    def test_busy_once_then_the_second_try_answers(self):
+        answer = self.ask(FakeBusy("503"), self.good)
+        self.assertTrue(answer.found)
+        self.assertEqual(self.calls, 2)
+        self.assertEqual(self.statuses(), [AILog.Status.ERROR, AILog.Status.SUCCESS])
+
+    def test_busy_twice_gives_up(self):
+        with self.assertRaises(FakeBusy):
+            self.ask(FakeBusy("503"), FakeBusy("503"))
+        self.assertEqual(self.calls, 2)  # only one retry
+
+    def test_other_errors_are_not_retried(self):
+        with self.assertRaises(TimeoutError):
+            self.ask(TimeoutError("too slow"), self.good)
+        self.assertEqual(self.calls, 1)
+
+    def test_another_script_once_then_the_second_try_answers(self):
+        reply = json.dumps({"found": True, "answer": "সাপ্লায়ரிடம்", "sources": [1]})
+        mixed = AIResponse(text=reply, provider="fake", model_name="fake-model")
+        answer = self.ask(mixed, self.good)
+        self.assertEqual(answer.text, "Cancel here.")
+        self.assertEqual(self.calls, 2)
+        self.assertEqual(self.statuses(), [AILog.Status.INVALID, AILog.Status.SUCCESS])
+
+
+class ForeignScriptTests(SimpleTestCase):
+    """Letters from other scripts (seen in real answers) are caught."""
+
+    def test_the_real_mistakes_are_caught(self):
+        self.assertEqual(foreign_letters("সাপ্লায়ரிடம்"), ["ட", "ம", "ர"])  # Tamil
+        self.assertEqual(
+            foreign_letters("PO এর കീഴിലുള്ള"), ["ക", "ല", "ള", "ഴ"]  # Malayalam
+        )
+
+    def test_bangla_english_and_banglish_are_fine(self):
+        for text in [
+            "Purchase Cancellation-এ যান। ১২৩, ৫%",
+            "supplier ke mal ferot dite hobe",
+            "café",
+        ]:
+            self.assertEqual(foreign_letters(text), [])
+
+    def test_an_answer_with_another_script_is_refused(self):
+        page = DocPage(url="https://docs.example.com/pdr/", title="PDR")
+        results = [SearchResult(chunk=DocChunk(page=page, text="Return."), score=0.8)]
+        raw = json.dumps({"found": True, "answer": "সাপ্লায়ரிடம்", "sources": [1]})
+        with self.assertRaises(ForeignScriptError):
+            parse_answer(raw, results)

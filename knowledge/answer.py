@@ -7,9 +7,11 @@ writes an answer from those chunks only, says which ones it used, and says
 
 import json
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 from django.conf import settings
+from openai import InternalServerError
 
 from tickets.models import AILog
 from tickets.triage import OpenAICompatibleClient
@@ -26,7 +28,10 @@ ANSWER_INSTRUCTIONS = (
     "- found: true only if the excerpts contain the answer. If they do not, "
     'use {"found": false, "answer": "", "sources": []}.\n'
     "- answer: in the same language and script as the question: Bangla script, "
-    "English, or Bangla written in English letters. Short and practical; give "
+    "English, or Bangla written in English letters. Use no other script. Keep "
+    "the names of screens, menus and fields in English, as the software shows "
+    "them, but write the sentences in the question's language. Short and "
+    "practical; give "
     "steps or field names when they help. Use only facts from the excerpts, "
     "never your own knowledge, even if you know the answer.\n"
     "- sources: the numbers of the excerpts you used.\n"
@@ -56,6 +61,7 @@ def build_answer_prompt(question, results):
 
 SEARCH_LIMIT = 5  # chunks given to the AI (decided in Step 4)
 ANSWER_TIMEOUT = 30  # seconds
+RETRY_WAIT_SECONDS = 2.0  # wait before the one retry
 NOT_FOUND_TEXT = (
     "দুঃখিত, documentation-এ এই প্রশ্নের উত্তর পাওয়া যায়নি। "
     "Sorry, the documentation does not answer this question."
@@ -64,6 +70,27 @@ NOT_FOUND_TEXT = (
 
 class AnswerValidationError(ValueError):
     """The AI answered, but the answer cannot be used (AILog status INVALID)."""
+
+
+def is_allowed_letter(char):
+    """Bangla letters, and Latin letters (English, Banglish, also é and the like)."""
+    if "\u0980" <= char <= "\u09ff":  # the Bangla block of Unicode
+        return True
+    return unicodedata.name(char, "").startswith("LATIN")
+
+
+def foreign_letters(text):
+    """The letters in text from any other script (Tamil, Malayalam, Hindi...).
+
+    Only letters are checked: digits, punctuation, spaces and vowel signs are
+    never a problem on their own.
+    """
+    letters = {char for char in text if char.isalpha() and not is_allowed_letter(char)}
+    return sorted(letters)
+
+
+class ForeignScriptError(AnswerValidationError):
+    """The answer mixes in letters of another script, such as Tamil."""
 
 
 @dataclass
@@ -101,6 +128,12 @@ def parse_answer(raw, results):
     if not isinstance(text, str) or not text.strip():
         raise AnswerValidationError("The answer is empty.")
 
+    letters = foreign_letters(text)
+    if letters:
+        raise ForeignScriptError(
+            "The answer has letters of another script: " + "".join(letters)
+        )
+
     # An answer without sources cannot be checked, so it is not trusted.
     numbers = data.get("sources")
     if not isinstance(numbers, list) or not numbers:
@@ -130,25 +163,8 @@ def get_answer_client():
     )
 
 
-def answer_question(question):
-    """Answer a question from the documentation. Return an Answer.
-
-    Never makes an answer up: when something fails, an error is raised
-    instead. ValueError: a bad question. RuntimeError: the AI is not set up.
-    AnswerValidationError: the AI's answer cannot be trusted. Any other
-    error: the AI call itself failed. Every AI call is written to AILog.
-    """
-    results = search_chunks(question, limit=SEARCH_LIMIT)  # checks the question
-    if not results:  # nothing has an embedding yet
-        return Answer(found=False, text=NOT_FOUND_TEXT)
-
-    client = get_answer_client()
-    if client is None:
-        raise RuntimeError(
-            "AI is not set up: fill AI_BASE_URL, AI_API_KEY and AI_MODEL in .env"
-        )
-    instructions, text = build_answer_prompt(question.strip(), results)
-
+def ask_once(client, instructions, text, results):
+    """One AI call for an answer: logged in AILog, checked, returned as an Answer."""
     log = AILog(purpose=AILog.Purpose.ANSWER)
     started = time.monotonic()
     try:
@@ -176,3 +192,32 @@ def answer_question(question):
     log.status = AILog.Status.SUCCESS
     log.save()
     return answer
+
+
+def answer_question(question):
+    """Answer a question from the documentation. Return an Answer.
+
+    Never makes an answer up: when something fails, an error is raised
+    instead. ValueError: a bad question. RuntimeError: the AI is not set up.
+    AnswerValidationError: the AI's answer cannot be trusted. Any other
+    error: the AI call itself failed. Every AI call is written to AILog.
+    """
+    results = search_chunks(question, limit=SEARCH_LIMIT)  # checks the question
+    if not results:  # nothing has an embedding yet
+        return Answer(found=False, text=NOT_FOUND_TEXT)
+
+    client = get_answer_client()
+    if client is None:
+        raise RuntimeError(
+            "AI is not set up: fill AI_BASE_URL, AI_API_KEY and AI_MODEL in .env"
+        )
+    instructions, text = build_answer_prompt(question.strip(), results)
+    try:
+        return ask_once(client, instructions, text, results)
+    except (InternalServerError, ForeignScriptError):
+        # Also when the answer mixed in another script: asking again usually works.
+        # The AI was busy for a moment (a 5xx such as 503): wait a little and
+        # try once more. Other errors are not retried: a timeout already made
+        # the customer wait, and a used-up free limit will not come back soon.
+        time.sleep(RETRY_WAIT_SECONDS)
+        return ask_once(client, instructions, text, results)
