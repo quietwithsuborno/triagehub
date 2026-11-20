@@ -1242,3 +1242,49 @@ class BuildOverviewsCommandTests(SimpleTestCase):
             call_command("build_overviews", "--force", stdout=out)
         self.assertTrue(fake.call_args.kwargs["force"])
         self.assertIn("Done: written 1, unchanged 0, failed 0", out.getvalue())
+
+
+MODULES_URL = "/api/v1/knowledge/modules/"
+
+
+class ModuleOverviewApiTests(APITestCase):
+    """GET the module overviews: read from the database, no AI call."""
+
+    def setUp(self):
+        rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.client.force_authenticate(user=rahim)
+        ModuleOverview.objects.create(
+            module="supply-chain",
+            summary_en="Buying goods.",
+            summary_bn="কেনাকাটা।",
+            flowchart=FLOWCHART,
+            source_hash="abc",
+            model_name="fake-model",
+        )
+
+    def test_the_list_shows_every_module(self):
+        response = self.client.get(MODULES_URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["module"], "supply-chain")
+
+    def test_one_module_has_its_summaries_and_flowchart(self):
+        response = self.client.get(MODULES_URL + "supply-chain/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary_en"], "Buying goods.")
+        self.assertEqual(response.data["summary_bn"], "কেনাকাটা।")
+        self.assertEqual(response.data["flowchart"], FLOWCHART)
+        self.assertNotIn("source_hash", response.data)  # stays inside
+
+    def test_an_unknown_module_is_404(self):
+        response = self.client.get(MODULES_URL + "no-such-module/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_login_is_required(self):
+        self.client.force_authenticate(user=None)
+        for url in [MODULES_URL, MODULES_URL + "supply-chain/"]:
+            self.assertEqual(self.client.get(url).status_code, 401)
+
+    def test_reading_an_overview_makes_no_ai_call(self):
+        self.client.get(MODULES_URL + "supply-chain/")
+        self.assertFalse(AILog.objects.exists())

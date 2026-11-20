@@ -3,13 +3,14 @@
 import logging
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .answer import AnswerValidationError, answer_question
-from .serializers import AnswerSerializer, AskSerializer
+from .models import ModuleOverview
+from .serializers import AnswerSerializer, AskSerializer, ModuleOverviewSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -59,3 +60,21 @@ class AskView(APIView):
             return unavailable()
         data = {"found": answer.found, "answer": answer.text, "sources": answer.sources}
         return Response(AnswerSerializer(data).data)
+
+
+@extend_schema(tags=["Knowledge"], summary="List the module overviews")
+class ModuleOverviewList(generics.ListAPIView):
+    """Every module's overview (summary and flowchart). Made in advance by
+    build_overviews, so reading it costs no AI call."""
+
+    queryset = ModuleOverview.objects.all()
+    serializer_class = ModuleOverviewSerializer
+
+
+@extend_schema(tags=["Knowledge"], summary="One module's overview")
+class ModuleOverviewDetail(generics.RetrieveAPIView):
+    """One module's overview, found by the module's name, e.g. supply-chain."""
+
+    queryset = ModuleOverview.objects.all()
+    serializer_class = ModuleOverviewSerializer
+    lookup_field = "module"
