@@ -1,7 +1,7 @@
 """Django admin panel setup for the documentation knowledge base."""
 
 from django.contrib import admin
-from .models import DocChunk, DocPage, ImageDescription
+from .models import DocChunk, DocPage, ImageDescription, ModuleOverview
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -44,3 +44,8 @@ class DocChunkAdmin(ReadOnlyAdmin):
 class ImageDescriptionAdmin(ReadOnlyAdmin):
     list_display = ("url", "model_name", "created_at")
     search_fields = ("url", "description")
+
+
+@admin.register(ModuleOverview)
+class ModuleOverviewAdmin(ReadOnlyAdmin):
+    list_display = ("module", "model_name", "updated_at")

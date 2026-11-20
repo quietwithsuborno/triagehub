@@ -48,7 +48,14 @@ from .ingest import (
     save_page,
     split_into_chunks,
 )
-from .models import EMBEDDING_DIMENSIONS, DocChunk, DocPage, ImageDescription
+from .models import (
+    EMBEDDING_DIMENSIONS,
+    DocChunk,
+    DocPage,
+    ImageDescription,
+    ModuleOverview,
+)
+from .overview import OverviewValidationError, build_overviews, parse_overview
 from .search import SearchResult, search_chunks
 from .views import UNAVAILABLE
 
@@ -1106,3 +1113,132 @@ class ForeignScriptTests(SimpleTestCase):
         raw = json.dumps({"found": True, "answer": "সাপ্লায়ரிடம்", "sources": [1]})
         with self.assertRaises(ForeignScriptError):
             parse_answer(raw, results)
+
+
+FLOWCHART = "flowchart TD\n  A[Purchase Request] --> B[Request for Quotation]"
+
+
+def overview_reply(**changes):
+    """The AI's answer for an overview, as JSON; changes replace parts of it."""
+    reply = {
+        "summary_en": "Buying goods, from request to payment.",
+        "summary_bn": "অনুরোধ থেকে পেমেন্ট পর্যন্ত কেনাকাটা।",
+        "flowchart": FLOWCHART,
+    }
+    reply.update(changes)
+    return json.dumps(reply)
+
+
+class OverviewCheckTests(SimpleTestCase):
+    """parse_overview: what is accepted, and what is refused."""
+
+    def test_a_good_answer_is_read_even_inside_a_mermaid_fence(self):
+        fenced = overview_reply(flowchart=f"```mermaid\n{FLOWCHART}\n```")
+        content = parse_overview("Here it is:\n" + fenced)
+        self.assertEqual(content.flowchart, FLOWCHART)
+        self.assertEqual(content.summary_bn, "অনুরোধ থেকে পেমেন্ট পর্যন্ত কেনাকাটা।")
+
+    def test_a_click_inside_a_box_label_is_fine(self):
+        flowchart = "flowchart TD\n  A[Click Select Winners] --> B[Save]"
+        content = parse_overview(overview_reply(flowchart=flowchart))
+        self.assertEqual(content.flowchart, flowchart)
+
+    def test_bad_answers_are_refused(self):
+        bad_answers = [
+            "no json at all",
+            overview_reply(flowchart=""),  # missing part
+            overview_reply(summary_bn="সাপ্লায়ரிடம்"),  # another script
+            overview_reply(flowchart="A --> B"),  # not a Mermaid flowchart
+            overview_reply(flowchart=FLOWCHART + '\n  click A href "http://x"'),
+            overview_reply(flowchart=FLOWCHART + "\n  C[javascript:alert(1)]"),
+            overview_reply(summary_en="word " * 500),  # too long
+        ]
+        for raw in bad_answers:
+            with self.assertRaises(OverviewValidationError):
+                parse_overview(raw)
+
+
+class BuildOverviewsTests(TestCase):
+    """build_overviews with a fake AI: no network, no cost."""
+
+    def setUp(self):
+        for url, module, title in [
+            ("https://docs.example.com/supply-chain/po/", "supply-chain", "PO"),
+            ("https://docs.example.com/supply-chain/grn/", "supply-chain", "GRN"),
+            ("https://docs.example.com/financial/voucher/", "financial", "Voucher"),
+        ]:
+            DocPage.objects.create(
+                url=url, module=module, title=title, content="Text.", content_hash=url
+            )
+
+    def build(self, client, force=False):
+        with (
+            mock.patch("knowledge.overview.get_overview_client", return_value=client),
+            mock.patch("knowledge.overview.RETRY_WAIT_SECONDS", 0),
+        ):
+            return build_overviews(force=force, report=lambda message: None)
+
+    def test_each_module_gets_one_overview_from_all_its_pages(self):
+        client = FakeAIClient(text=overview_reply())
+        counts = self.build(client)
+        self.assertEqual(counts, {"written": 2, "unchanged": 0, "failed": 0})
+        overview = ModuleOverview.objects.get(module="supply-chain")
+        self.assertEqual(overview.flowchart, FLOWCHART)
+        self.assertEqual(overview.model_name, "fake-model")
+        # The AI saw both pages of the module: modules are in name order.
+        financial_text, supply_chain_text = client.calls[0][1], client.calls[1][1]
+        self.assertIn("## Voucher", financial_text)
+        self.assertIn("## GRN", supply_chain_text)
+        self.assertIn("## PO", supply_chain_text)
+
+    def test_unchanged_modules_cost_no_ai_call(self):
+        self.build(FakeAIClient(text=overview_reply()))
+        client = FakeAIClient(text=overview_reply())
+        counts = self.build(client)
+        self.assertEqual(counts, {"written": 0, "unchanged": 2, "failed": 0})
+        self.assertEqual(client.calls, [])
+
+    def test_a_changed_page_rewrites_only_its_module(self):
+        self.build(FakeAIClient(text=overview_reply()))
+        DocPage.objects.filter(title="GRN").update(content_hash="new")
+        counts = self.build(FakeAIClient(text=overview_reply()))
+        self.assertEqual(counts, {"written": 1, "unchanged": 1, "failed": 0})
+
+    def test_force_rewrites_all(self):
+        self.build(FakeAIClient(text=overview_reply()))
+        counts = self.build(FakeAIClient(text=overview_reply()), force=True)
+        self.assertEqual(counts["written"], 2)
+
+    def test_an_unusable_answer_is_tried_once_more(self):
+        client = mock.Mock()
+        good = AIResponse(text=overview_reply(), provider="f", model_name="m")
+        bad = AIResponse(text="no json", provider="f", model_name="m")
+        client.complete.side_effect = [bad, good, good]  # financial: bad, then good
+        counts = self.build(client)
+        self.assertEqual(counts, {"written": 2, "unchanged": 0, "failed": 0})
+        self.assertEqual(client.complete.call_count, 3)
+
+    def test_a_module_that_fails_twice_is_skipped_and_nothing_is_saved(self):
+        counts = self.build(FakeAIClient(text="no json"))
+        self.assertEqual(counts, {"written": 0, "unchanged": 0, "failed": 2})
+        self.assertFalse(ModuleOverview.objects.exists())
+        invalid = AILog.objects.filter(
+            purpose=AILog.Purpose.OVERVIEW, status=AILog.Status.INVALID
+        )
+        self.assertEqual(invalid.count(), 4)  # 2 modules x 2 tries
+
+    def test_without_ai_settings_it_refuses_to_run(self):
+        with self.assertRaises(RuntimeError):
+            self.build(None)
+
+
+class BuildOverviewsCommandTests(SimpleTestCase):
+    TARGET = "knowledge.management.commands.build_overviews.build_overviews"
+
+    def test_passes_force_and_prints_the_totals(self):
+        totals = {"written": 1, "unchanged": 0, "failed": 0}
+        out = StringIO()
+        with mock.patch(self.TARGET, return_value=totals) as fake:
+            call_command("build_overviews", "--force", stdout=out)
+        self.assertTrue(fake.call_args.kwargs["force"])
+        self.assertIn("Done: written 1, unchanged 0, failed 0", out.getvalue())

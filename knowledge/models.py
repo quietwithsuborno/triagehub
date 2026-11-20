@@ -88,3 +88,25 @@ class ImageDescription(models.Model):
 
     def __str__(self):
         return self.url
+
+
+class ModuleOverview(models.Model):
+    """An AI-written overview of one documentation module, made in advance.
+
+    Made once from the module's pages and kept here, so showing it costs no
+    AI call. It is made again only when the module's pages change.
+    """
+
+    module = models.CharField(max_length=50, unique=True)
+    summary_en = models.TextField()
+    summary_bn = models.TextField()
+    flowchart = models.TextField()  # Mermaid text; the browser draws it
+    source_hash = models.CharField(max_length=64)  # fingerprint of the pages used
+    model_name = models.CharField(max_length=100)  # which AI model wrote it
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["module"]
+
+    def __str__(self):
+        return self.module

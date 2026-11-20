@@ -126,6 +126,7 @@ class AILog(models.Model):
         IMAGE_DESCRIPTION = "image_description", "Image description"
         EMBEDDING = "embedding", "Embedding"
         ANSWER = "answer", "Answer"
+        OVERVIEW = "overview", "Module overview"
 
     class Status(models.TextChoices):
         SUCCESS = "success", "Success"  # valid answer, used on the ticket
