@@ -269,13 +269,16 @@ class OpenAICompatibleClient(AIClient):
     from settings (.env), so changing provider needs no code change.
     """
 
-    def __init__(self, base_url, api_key, model, timeout):
+    def __init__(self, base_url, api_key, model, timeout, temperature=None):
         # max_retries=0: no automatic second try. A retry would make the
         # customer wait twice as long; our fallback handles a failed call.
         self.client = OpenAI(
             base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0
         )
         self.model = model
+        # How random the wording is: 0 = steady, higher = more varied. None
+        # leaves the provider's default (triage keeps it; answers set it low).
+        self.temperature = temperature
         # The provider's host name, e.g. generativelanguage.googleapis.com.
         self.provider = (urlparse(base_url).hostname or "unknown")[:50]
 
@@ -328,8 +331,9 @@ class OpenAICompatibleClient(AIClient):
 
     def _send(self, messages):
         """Send the messages to the AI and wrap its answer in an AIResponse."""
+        options = {} if self.temperature is None else {"temperature": self.temperature}
         response = self.client.chat.completions.create(
-            model=self.model, messages=messages
+            model=self.model, messages=messages, **options
         )
         usage = response.usage  # some providers may leave this out
         return AIResponse(

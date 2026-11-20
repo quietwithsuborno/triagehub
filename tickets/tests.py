@@ -849,6 +849,20 @@ class AIClientSettingsTests(SimpleTestCase):
 
         self.assertEqual(response.vectors, [[1.0, 0.0], [0.0, 1.0]])
 
+    def test_real_client_sends_a_temperature_only_when_one_is_given(self):
+        for temperature in [None, 0.2]:
+            client = OpenAICompatibleClient(
+                GEMINI_URL, "test-key", "gemini-test", 10, temperature=temperature
+            )
+            client.client = mock.Mock()
+            client.client.chat.completions.create.return_value = mock.Mock(
+                choices=[mock.Mock(message=mock.Mock(content="{}"))], usage=None
+            )
+            client.complete("our rules", "<ticket>...</ticket>")
+            sent = client.client.chat.completions.create.call_args.kwargs
+            self.assertEqual(sent.get("temperature"), temperature)
+            self.assertEqual("temperature" in sent, temperature is not None)
+
 
 class ThrottleTests(APITestCase):
     """Speed limits: too many requests in a short time get 429.

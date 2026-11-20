@@ -26,11 +26,13 @@ from .answer import (
     NOT_FOUND_TEXT,
     AnswerValidationError,
     answer_question,
+    ANSWER_TEMPERATURE,
     build_answer_prompt,
     Answer,
     ForeignScriptError,
     foreign_letters,
     parse_answer,
+    get_answer_client,
 )
 from .embeddings import chunk_text, embed_new_chunks
 from .images import describe_new_images, fetch_image
@@ -749,7 +751,8 @@ class AnswerPromptTests(SimpleTestCase):
     def test_the_rules_ask_for_json_only_from_the_excerpts(self):
         self.assertIn('"found"', self.instructions)
         self.assertIn("ONLY the documentation excerpts", self.instructions)
-        self.assertIn("same language and script as the question", self.instructions)
+        self.assertIn("a question in English: answer in English", self.instructions)
+        self.assertIn("too vague to answer", self.instructions)
         # The customer's words never go into our instructions.
         self.assertNotIn("kivabe", self.instructions)
         self.assertIn("Use no other script", self.instructions)
@@ -856,6 +859,12 @@ class AnswerQuestionTests(TestCase):
     def test_without_ai_settings_it_refuses_to_run(self):
         with self.assertRaises(RuntimeError):
             self.ask(None)
+
+    @override_settings(
+        AI_BASE_URL="https://example.com/v1/", AI_API_KEY="test-key", AI_MODEL="m"
+    )
+    def test_answers_use_a_low_temperature(self):
+        self.assertEqual(get_answer_client().temperature, ANSWER_TEMPERATURE)
 
 
 ASK_URL = "/api/v1/knowledge/ask/"
