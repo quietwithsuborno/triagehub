@@ -71,6 +71,13 @@ NOT_FOUND_TEXT = (
     "Sorry, the documentation does not answer this question."
 )
 
+NOT_FOUND_TEXT = (
+    "দুঃখিত, documentation-এ এই প্রশ্নের উত্তর পাওয়া যায়নি। চাইলে প্রশ্নটা আমাদের "
+    "সাপোর্ট টিমের কাছে পাঠাতে পারেন, টিমের একজন সদস্য আপনাকে উত্তর দেবেন। "
+    "Sorry, our documentation does not answer this question. You can send it to our "
+    "support team, and a team member will reply to you."
+)
+
 
 class AnswerValidationError(ValueError):
     """The AI answered, but the answer cannot be used (AILog status INVALID)."""
