@@ -32,3 +32,11 @@ class ModuleOverviewSerializer(serializers.ModelSerializer):
         model = ModuleOverview
         # source_hash and model_name stay inside: they are for us, not readers.
         fields = ["module", "summary_en", "summary_bn", "flowchart", "updated_at"]
+
+
+class SuggestedReplySerializer(serializers.Serializer):
+    """A reply draft for a ticket: for the agent to check, change and send."""
+
+    found = serializers.BooleanField()
+    reply = serializers.CharField(allow_blank=True)
+    sources = SourceSerializer(many=True)

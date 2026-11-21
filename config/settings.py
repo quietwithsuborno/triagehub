@@ -180,6 +180,7 @@ REST_FRAMEWORK = {
         "user": "120/minute",
         "ticket_create": "30/hour",
         "knowledge_ask": "20/hour",
+        "suggest_reply": "60/hour",
     },
 }
 

@@ -19,7 +19,7 @@ from rest_framework.test import APITestCase
 from rest_framework.throttling import SimpleRateThrottle
 
 from accounts.models import User
-from tickets.models import AILog
+from tickets.models import AILog, Ticket
 from tickets.triage import AIResponse, EmbeddingResponse, FakeAIClient
 
 from .answer import (
@@ -56,7 +56,7 @@ from .models import (
     ModuleOverview,
 )
 from .overview import OverviewValidationError, build_overviews, parse_overview
-from .search import SearchResult, search_chunks
+from .search import MAX_QUESTION_CHARS, SearchResult, search_chunks
 from .views import UNAVAILABLE
 
 
@@ -1288,3 +1288,121 @@ class ModuleOverviewApiTests(APITestCase):
     def test_reading_an_overview_makes_no_ai_call(self):
         self.client.get(MODULES_URL + "supply-chain/")
         self.assertFalse(AILog.objects.exists())
+
+
+class SuggestedReplyApiTests(APITestCase):
+    """POST /api/v1/tickets/{id}/suggested-reply/ with a fake answer_question."""
+
+    TARGET = "knowledge.views.answer_question"
+    FOUND = Answer(
+        found=True,
+        text="Open the purchase order and click Cancel.",
+        sources=[
+            {
+                "title": "Purchase Cancellation",
+                "url": "https://docs.example.com/guide/pc/",
+            }
+        ],
+    )
+
+    def setUp(self):
+        cache.clear()  # throttling counts requests in the cache: start from zero
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.agent = User.objects.create_user(
+            username="agent1", password="pass12345", role=User.Role.AGENT
+        )
+        self.ticket = Ticket.objects.create(
+            title="PO cancel korte parchi na",
+            description="kivabe korbo?",
+            created_by=self.rahim,
+        )
+        self.client.force_authenticate(user=self.agent)
+
+    def url(self, pk):
+        return f"/api/v1/tickets/{pk}/suggested-reply/"
+
+    def suggest(self, pk=None):
+        return self.client.post(self.url(pk or self.ticket.pk))
+
+    def test_staff_get_a_draft_with_its_sources(self):
+        admin = User.objects.create_user(
+            username="lead", password="pass12345", role=User.Role.ADMIN
+        )
+        for user in [self.agent, admin]:
+            with self.subTest(role=user.role):
+                self.client.force_authenticate(user=user)
+                with mock.patch(self.TARGET, return_value=self.FOUND) as fake:
+                    response = self.suggest()
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    response.data,
+                    {
+                        "found": True,
+                        "reply": "Open the purchase order and click Cancel.",
+                        "sources": self.FOUND.sources,
+                    },
+                )
+                # The question is the ticket: title, then description.
+                fake.assert_called_once_with("PO cancel korte parchi na\nkivabe korbo?")
+
+    def test_no_answer_in_the_docs_gives_an_empty_draft(self):
+        not_found = Answer(found=False, text=NOT_FOUND_TEXT)
+        with mock.patch(self.TARGET, return_value=not_found):
+            response = self.suggest()
+        self.assertEqual(response.status_code, 200)
+        # The customer message is not shown to the agent.
+        self.assertEqual(response.data, {"found": False, "reply": "", "sources": []})
+
+    def test_customers_get_403_even_for_their_own_ticket(self):
+        self.client.force_authenticate(user=self.rahim)
+        with mock.patch(self.TARGET) as fake:
+            response = self.suggest()
+        self.assertEqual(response.status_code, 403)
+        fake.assert_not_called()
+
+    def test_login_is_required(self):
+        self.client.force_authenticate(user=None)
+        with mock.patch(self.TARGET) as fake:
+            response = self.suggest()
+        self.assertEqual(response.status_code, 401)
+        fake.assert_not_called()
+
+    def test_an_unknown_ticket_gets_404_without_an_ai_call(self):
+        with mock.patch(self.TARGET) as fake:
+            response = self.suggest(pk=self.ticket.pk + 100)
+        self.assertEqual(response.status_code, 404)
+        fake.assert_not_called()
+
+    def test_a_long_ticket_is_cut_to_the_question_limit(self):
+        self.ticket.description = "a" * 3000
+        self.ticket.save()
+        with mock.patch(self.TARGET, return_value=self.FOUND) as fake:
+            self.suggest()
+        question = fake.call_args.args[0]
+        self.assertEqual(len(question), MAX_QUESTION_CHARS)
+        self.assertTrue(question.startswith("PO cancel korte parchi na\naaa"))
+
+    def test_an_ai_failure_gets_503_and_hides_the_inner_error(self):
+        error = TimeoutError("inner detail")
+        with mock.patch(self.TARGET, side_effect=error):
+            with self.assertLogs("knowledge.views", level="ERROR"):
+                response = self.suggest()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["detail"], UNAVAILABLE)
+        self.assertNotIn("inner detail", str(response.data))
+
+    def test_get_is_not_allowed(self):
+        with mock.patch(self.TARGET) as fake:
+            response = self.client.get(self.url(self.ticket.pk))
+        self.assertEqual(response.status_code, 405)
+        fake.assert_not_called()
+
+    def test_too_many_drafts_get_429(self):
+        rates = {"suggest_reply": "2/hour"}
+        with (
+            mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, rates),
+            mock.patch(self.TARGET, return_value=self.FOUND),
+        ):
+            for _ in range(2):
+                self.assertEqual(self.suggest().status_code, 200)
+            self.assertEqual(self.suggest().status_code, 429)

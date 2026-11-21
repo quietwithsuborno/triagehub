@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from .views import AskView, ModuleOverviewDetail, ModuleOverviewList
+from .views import AskView, ModuleOverviewDetail, ModuleOverviewList, SuggestedReplyView
 
 urlpatterns = [
     path("knowledge/ask/", AskView.as_view(), name="knowledge-ask"),
@@ -13,5 +13,10 @@ urlpatterns = [
         "knowledge/modules/<slug:module>/",
         ModuleOverviewDetail.as_view(),
         name="module-overview-detail",
+    ),
+    path(
+        "tickets/<int:pk>/suggested-reply/",
+        SuggestedReplyView.as_view(),
+        name="suggested-reply",
     ),
 ]
