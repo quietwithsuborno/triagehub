@@ -28,7 +28,6 @@ class DocPage(models.Model):
     # A fingerprint of the content. If a page has not changed since the last
     # fetch, the fingerprint is the same and its chunks are not rebuilt.
     content_hash = models.CharField(max_length=64)
-    summary = models.TextField(blank=True)  # short AI summary, for module overviews
     # Addresses of the images on the page, kept for describing them later.
     image_urls = models.JSONField(default=list, blank=True)
     fetched_at = models.DateTimeField(auto_now=True)  # last time it was saved

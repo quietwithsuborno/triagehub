@@ -196,7 +196,6 @@ def save_page(url, page):
             "content": page_text(page),
             "content_hash": content_hash,
             "image_urls": page.image_urls,
-            "summary": "",  # the old summary no longer matches the new text
         },
     )
     # The old chunks (and their embeddings) no longer match the new text.
