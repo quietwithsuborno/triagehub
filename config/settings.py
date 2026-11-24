@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -188,6 +189,20 @@ REST_FRAMEWORK = {
         "knowledge_ask": "20/hour",
         "suggest_reply": "60/hour",
     },
+}
+
+# JWT login tokens. These are the library's defaults, written out so the
+# values can be read here. Tokens are signed with SECRET_KEY, so anyone who
+# knows it can make a valid token for any user: keep it secret, and note that
+# changing it logs everyone out.
+SIMPLE_JWT = {
+    # Short life: a stolen access token stops working after 5 minutes.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
+    # Used only to get a new access token without typing the password again.
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": SECRET_KEY,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 # Swagger / OpenAPI docs served at /api/docs/.
