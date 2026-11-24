@@ -8,7 +8,7 @@ token; the real JWT flow is tested in accounts/tests.py.
 from unittest import mock
 from rest_framework.test import APITestCase
 from accounts.models import User
-from .models import Ticket, Comment, Category, AILog
+from .models import Ticket, Comment, Category, AILog, TicketChange
 from .triage import (
     FakeAIClient,
     OpenAICompatibleClient,
@@ -898,3 +898,61 @@ class ThrottleTests(APITestCase):
             self.assertEqual(response.status_code, 429)
             # The stricter limit is only for creating; the list still opens.
             self.assertEqual(self.client.get("/api/v1/tickets/").status_code, 200)
+
+
+class TicketHistoryWriteTests(APITestCase):
+    """Updating a ticket through the API writes its history."""
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.ticket = Ticket.objects.create(
+            title="Rahim ticket", description="rahim er problem", created_by=self.rahim
+        )
+        self.url = f"/api/v1/tickets/{self.ticket.id}/"
+        self.client.force_authenticate(user=self.karim)
+
+    def test_status_change_is_recorded(self):
+        response = self.client.patch(self.url, {"status": "in_progress"})
+        self.assertEqual(response.status_code, 200)
+        change = TicketChange.objects.get(ticket=self.ticket)
+        self.assertEqual(change.field_name, "status")
+        self.assertEqual(change.old_value, "open")
+        self.assertEqual(change.new_value, "in_progress")
+        self.assertEqual(change.changed_by, self.karim)
+
+    def test_one_update_can_record_several_fields(self):
+        self.client.patch(self.url, {"status": "in_progress", "priority": "urgent"})
+        fields = set(self.ticket.changes.values_list("field_name", flat=True))
+        self.assertEqual(fields, {"status", "priority"})
+
+    def test_same_value_records_nothing(self):
+        # The ticket is already open, so sending "open" changes nothing.
+        response = self.client.patch(self.url, {"status": "open"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_category_and_assignee_are_saved_by_name(self):
+        billing = Category.objects.create(name="Billing")
+        self.client.patch(
+            self.url, {"category": billing.id, "assigned_to": self.karim.id}
+        )
+        category_change = self.ticket.changes.get(field_name="category")
+        self.assertEqual(category_change.old_value, "")
+        self.assertEqual(category_change.new_value, "Billing")
+        assignee_change = self.ticket.changes.get(field_name="assigned_to")
+        self.assertEqual(assignee_change.old_value, "")
+        self.assertEqual(assignee_change.new_value, "karim")
+
+    def test_failed_history_undoes_the_change(self):
+        # If writing the history fails, the ticket must not change either.
+        with mock.patch(
+            "tickets.views.record_changes", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.patch(self.url, {"status": "closed"})
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Ticket.Status.OPEN)
+        self.assertEqual(TicketChange.objects.count(), 0)

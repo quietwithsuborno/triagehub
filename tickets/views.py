@@ -1,6 +1,7 @@
 """API views for tickets, their comments, and categories."""
 
 import logging
+from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,6 +10,7 @@ from .models import Ticket, Category
 from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
 from .permissions import CanModifyTicket
 from .triage import triage_ticket
+from .history import snapshot, record_changes
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,18 @@ class TicketViewSet(viewsets.ModelViewSet):
             logger.exception("AI triage failed for ticket %s", ticket.pk)
             # Show what is really in the database, not half-changed values.
             ticket.refresh_from_db()
+
+    def perform_update(self, serializer):
+        """Save the change and write its history: both or neither.
+
+        The old values are read before saving, because save() overwrites
+        them on the same object. Inside one transaction, so a failure while
+        writing the history also undoes the change itself.
+        """
+        with transaction.atomic():
+            before = snapshot(serializer.instance)
+            ticket = serializer.save()
+            record_changes(ticket, before, self.request.user)
 
     @action(
         detail=True,
