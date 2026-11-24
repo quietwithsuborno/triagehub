@@ -3,10 +3,10 @@ services:
     build: ./db
     environment:
       POSTGRES_DB: triagehub
-      POSTGRES_USER: triagehub
-      POSTGRES_PASSWORD: triagehub_dev_password
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
