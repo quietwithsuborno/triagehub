@@ -28,9 +28,15 @@ SECRET_KEY = os.environ["SECRET_KEY"]
 # Off unless .env says DEBUG=True, so a missing setting fails safe (off).
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-# Empty is fine while DEBUG is on (localhost only). Must list real hosts before
-# deploying (Phase 5/6).
-ALLOWED_HOSTS = []
+# Addresses this site answers to, from .env, separated by commas, e.g.
+# ALLOWED_HOSTS=localhost,127.0.0.1,192.168.0.15. Requests to any other
+# address get 400. Without the setting only this computer is allowed, so a
+# forgotten setting fails safe. Add the real domain before deploying (Phase 8).
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",")
+    if host.strip()
+]
 
 
 # Application definition
