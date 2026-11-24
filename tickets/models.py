@@ -114,6 +114,51 @@ class Comment(models.Model):
         return f"Comment by {self.author} on ticket #{self.ticket_id}"
 
 
+class TicketChange(models.Model):
+    """One change to one field of a ticket. All rows together are its history.
+
+    Values are saved as text (a category's name, not its id), so the history
+    still shows what it was even after a category or user is renamed or
+    deleted. changed_by is empty when the AI or the system made the change.
+    """
+
+    class Field(models.TextChoices):
+        STATUS = "status", "Status"
+        PRIORITY = "priority", "Priority"
+        CATEGORY = "category", "Category"
+        ASSIGNED_TO = "assigned_to", "Assigned to"
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name="changes",
+    )
+    field_name = models.CharField(max_length=20, choices=Field.choices)
+    # TextField, not CharField: same speed in PostgreSQL, and a description's
+    # history (S6) can be long.
+    old_value = models.TextField(blank=True)
+    new_value = models.TextField(blank=True)
+    # SET_NULL: the history stays even if the user is deleted.
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ticket_changes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Oldest first, like a timeline. "id" keeps the order fixed when one
+        # update changes two fields at the same moment.
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return (
+            f"#{self.ticket_id} {self.field_name}: {self.old_value} -> {self.new_value}"
+        )
+
+
 class AILog(models.Model):
     """One record for every call to the AI, successful or not.
 

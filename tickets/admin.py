@@ -1,7 +1,7 @@
 """Django admin panel setup for categories, tickets and comments."""
 
 from django.contrib import admin
-from .models import Category, Ticket, Comment, AILog
+from .models import Category, Ticket, Comment, AILog, TicketChange
 
 
 @admin.register(Category)
@@ -58,6 +58,32 @@ class AILogAdmin(admin.ModelAdmin):
 
     # Logs are written by the code only. Nobody adds or edits them by hand,
     # otherwise they could no longer be trusted. Deleting old logs is allowed.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(TicketChange)
+class TicketChangeAdmin(admin.ModelAdmin):
+    """Read-only view of ticket history: it is a record of what happened."""
+
+    list_display = (
+        "id",
+        "ticket",
+        "field_name",
+        "old_value",
+        "new_value",
+        "changed_by",
+        "created_at",
+    )
+    list_filter = ("field_name",)
+    list_select_related = ("ticket", "changed_by")
+
+    # Written by the code only, like AILog. Delete stays allowed on purpose:
+    # without it, Django admin would refuse to delete any ticket that has
+    # history, even for a superuser (see journal 6B, step 1b).
     def has_add_permission(self, request):
         return False
 
