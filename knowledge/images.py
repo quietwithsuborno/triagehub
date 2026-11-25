@@ -116,7 +116,13 @@ def describe_new_images(limit=20, pause=IMAGE_PAUSE_SECONDS, report=print):
         for url in urls
     }
     done = set(ImageDescription.objects.values_list("url", flat=True))
-    waiting = sorted(all_urls - done)
+    # Images written inside the page ("data:image/png;base64,..."), not files
+    # with an address. On these docs they are 50x50 menu icons with no
+    # information (journal 6J). Reported, not hidden, so a jump gets noticed.
+    inline = {url for url in all_urls if not url.startswith(("http://", "https://"))}
+    if inline:
+        report(f"skipped {len(inline)} image(s) written inside the page, not files")
+    waiting = sorted(all_urls - done - inline)
 
     counts = {"described": 0, "failed": 0, "left": 0}
     for url in waiting[:limit]:

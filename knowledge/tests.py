@@ -398,6 +398,31 @@ class DescribeImagesTests(TestCase):
         with self.assertRaises(RuntimeError):
             self.run_describe(None)
 
+    def test_images_inside_the_page_are_skipped_and_reported(self):
+        # A "data:" image is written inside the page's HTML; on these docs
+        # they are small menu icons. It is not sent to the AI, and not
+        # counted as failed or left, but the run says how many it skipped.
+        DocPage.objects.create(
+            url="https://docs.example.com/guide/c/",
+            module="guide",
+            title="c",
+            content="Text.",
+            content_hash="c",
+            image_urls=["data:image/png;base64,iVBORw0KGgo="],
+        )
+        messages = []
+        client = FakeAIClient(text="A form.")
+        with (
+            mock.patch("knowledge.images.get_image_client", return_value=client),
+            mock.patch(
+                "knowledge.images.fetch_image", return_value=(b"\x89PNG", "image/png")
+            ),
+        ):
+            counts = describe_new_images(pause=0, report=messages.append)
+        self.assertEqual(counts, {"described": 2, "failed": 0, "left": 0})
+        self.assertEqual(len(client.calls), 2)  # the icon never reached the AI
+        self.assertIn("skipped 1 image(s) written inside the page, not files", messages)
+
 
 class FetchImageTests(SimpleTestCase):
     def test_returns_the_bytes_and_the_type(self):
