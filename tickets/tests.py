@@ -1039,3 +1039,70 @@ class TicketHistoryReadTests(APITestCase):
         self.assertEqual(response.data[0]["old_value"], "open")
         self.assertEqual(response.data[0]["new_value"], "resolved")
         self.assertEqual(response.data[0]["changed_by_username"], "karim")
+
+
+class TriageHistoryTests(APITestCase):
+    """The AI's triage on a new ticket is written to its history too.
+
+    changed_by is empty on these rows: the AI made the change, not a person.
+    """
+
+    VALID_ANSWER = (
+        '{"category": "Billing", "priority": "high", "summary": "Charged twice."}'
+    )
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        Category.objects.create(name="Billing")
+
+    def create_ticket(self, user, ai):
+        """POST a new ticket as user, with ai as the AI client."""
+        self.client.force_authenticate(user=user)
+        data = {"title": "Double payment", "description": "Charged twice."}
+        with mock.patch("tickets.triage.get_ai_client", return_value=ai):
+            return self.client.post("/api/v1/tickets/", data)
+
+    def test_ai_changes_are_recorded_without_a_person(self):
+        response = self.create_ticket(self.rahim, FakeAIClient(text=self.VALID_ANSWER))
+        self.assertEqual(response.status_code, 201, response.data)
+        changes = {c.field_name: c for c in TicketChange.objects.all()}
+        self.assertEqual(set(changes), {"category", "priority"})
+        self.assertEqual(changes["category"].old_value, "")
+        self.assertEqual(changes["category"].new_value, "Billing")
+        self.assertEqual(changes["priority"].old_value, "medium")
+        self.assertEqual(changes["priority"].new_value, "high")
+        self.assertIsNone(changes["priority"].changed_by)
+
+    def test_same_priority_from_the_ai_records_only_the_category(self):
+        answer = '{"category": "Billing", "priority": "medium", "summary": "S."}'
+        self.create_ticket(self.rahim, FakeAIClient(text=answer))
+        fields = list(TicketChange.objects.values_list("field_name", flat=True))
+        self.assertEqual(fields, ["category"])
+
+    def test_agent_ticket_records_nothing(self):
+        # On staff tickets the AI only writes the summary, which has no history.
+        self.create_ticket(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_ai_error_records_nothing(self):
+        self.create_ticket(self.rahim, FakeAIClient(error=TimeoutError("slow")))
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_failed_history_keeps_the_ticket_but_not_the_ai_values(self):
+        # The ticket is saved before the triage, so it survives (201). The AI's
+        # values and their history are undone together.
+        with mock.patch(
+            "tickets.triage.record_changes", side_effect=RuntimeError("boom")
+        ):
+            with self.assertLogs("tickets.views", level="ERROR"):
+                response = self.create_ticket(
+                    self.rahim, FakeAIClient(text=self.VALID_ANSWER)
+                )
+        self.assertEqual(response.status_code, 201, response.data)
+        ticket = Ticket.objects.get(id=response.data["id"])
+        self.assertEqual(ticket.priority, Ticket.Priority.MEDIUM)
+        self.assertIsNone(ticket.category)
+        self.assertEqual(TicketChange.objects.count(), 0)

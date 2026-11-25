@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.db import transaction
 from openai import OpenAI
 from .models import Ticket, AILog, Category
+from .history import snapshot, record_changes
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +381,9 @@ def triage_ticket(ticket):
     if result is None:
         return
 
+    # The values before the AI changes them, to write the history afterwards.
+    before = snapshot(ticket)
+
     ticket.ai_summary = result.summary
     changed_fields = ["ai_summary"]
     if not ticket.created_by.is_support_staff:
@@ -386,5 +391,10 @@ def triage_ticket(ticket):
         ticket.category = Category.objects.filter(name=result.category_name).first()
         ticket.priority = result.priority
         changed_fields += ["category", "priority"]
-    # update_fields writes only these columns, not the whole row again.
-    ticket.save(update_fields=changed_fields + ["updated_at"])
+
+    # Save and history together: both or neither, like perform_update.
+    # changed_by is None because the AI made this change, not a person.
+    with transaction.atomic():
+        # update_fields writes only these columns, not the whole row again.
+        ticket.save(update_fields=changed_fields + ["updated_at"])
+        record_changes(ticket, before, None)
