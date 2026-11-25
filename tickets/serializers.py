@@ -1,7 +1,7 @@
 """Serializers: convert tickets, comments and categories to and from JSON."""
 
 from rest_framework import serializers
-from .models import Ticket, Comment, Category
+from .models import Ticket, Comment, Category, TicketChange
 
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -104,3 +104,27 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = ["id", "name"]
+
+
+class TicketChangeSerializer(serializers.ModelSerializer):
+    """One line of a ticket's history. All fields are read-only: the history
+    is written by the code, never by a request.
+
+    changed_by_username is null when the AI or the system made the change.
+    """
+
+    changed_by_username = serializers.CharField(
+        source="changed_by.username", read_only=True, allow_null=True
+    )
+
+    class Meta:
+        model = TicketChange
+        fields = [
+            "id",
+            "field_name",
+            "old_value",
+            "new_value",
+            "changed_by_username",
+            "created_at",
+        ]
+        read_only_fields = fields

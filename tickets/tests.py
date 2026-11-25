@@ -956,3 +956,86 @@ class TicketHistoryWriteTests(APITestCase):
         self.ticket.refresh_from_db()
         self.assertEqual(self.ticket.status, Ticket.Status.OPEN)
         self.assertEqual(TicketChange.objects.count(), 0)
+
+
+class TicketHistoryReadTests(APITestCase):
+    """GET /tickets/{id}/history/: who may see which part of the history.
+
+    setUp writes four changes straight into the database, oldest first:
+    status and priority and assignee by karim, and a category set by the AI
+    (changed_by empty).
+    """
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.jamal = User.objects.create_user(username="jamal", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.ticket = Ticket.objects.create(
+            title="Rahim ticket", description="rahim er problem", created_by=self.rahim
+        )
+        self.url = f"/api/v1/tickets/{self.ticket.id}/history/"
+        for field_name, old, new, by in [
+            ("status", "open", "in_progress", self.karim),
+            ("priority", "medium", "urgent", self.karim),
+            ("assigned_to", "", "karim", self.karim),
+            ("category", "", "Billing", None),
+        ]:
+            TicketChange.objects.create(
+                ticket=self.ticket,
+                field_name=field_name,
+                old_value=old,
+                new_value=new,
+                changed_by=by,
+            )
+
+    def test_anonymous_cannot_view_history(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 401)
+
+    def test_customer_sees_only_status_changes(self):
+        self.client.force_authenticate(user=self.rahim)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        fields = [row["field_name"] for row in response.data]
+        self.assertEqual(fields, ["status"])
+
+    def test_staff_sees_all_changes_oldest_first(self):
+        self.client.force_authenticate(user=self.karim)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        fields = [row["field_name"] for row in response.data]
+        self.assertEqual(fields, ["status", "priority", "assigned_to", "category"])
+
+    def test_other_customer_cannot_view_history(self):
+        # 404, not 403: jamal should not even learn that the ticket exists.
+        self.client.force_authenticate(user=self.jamal)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_change_made_by_the_ai_has_no_username(self):
+        self.client.force_authenticate(user=self.karim)
+        response = self.client.get(self.url)
+        by_field = {row["field_name"]: row for row in response.data}
+        self.assertEqual(by_field["status"]["changed_by_username"], "karim")
+        self.assertIsNone(by_field["category"]["changed_by_username"])
+
+    def test_history_cannot_be_written_through_the_api(self):
+        self.client.force_authenticate(user=self.karim)
+        response = self.client.post(self.url, {"field_name": "status"})
+        self.assertEqual(response.status_code, 405)
+
+    def test_update_then_read_shows_the_change(self):
+        # The whole path: an agent updates, the customer reads it back.
+        fresh = Ticket.objects.create(
+            title="Second", description="aro ekta", created_by=self.rahim
+        )
+        self.client.force_authenticate(user=self.karim)
+        self.client.patch(f"/api/v1/tickets/{fresh.id}/", {"status": "resolved"})
+        self.client.force_authenticate(user=self.rahim)
+        response = self.client.get(f"/api/v1/tickets/{fresh.id}/history/")
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["old_value"], "open")
+        self.assertEqual(response.data[0]["new_value"], "resolved")
+        self.assertEqual(response.data[0]["changed_by_username"], "karim")

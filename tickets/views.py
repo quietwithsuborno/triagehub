@@ -6,8 +6,13 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
-from .models import Ticket, Category
-from .serializers import TicketSerializer, CommentSerializer, CategorySerializer
+from .models import Ticket, Category, TicketChange
+from .serializers import (
+    TicketSerializer,
+    CommentSerializer,
+    CategorySerializer,
+    TicketChangeSerializer,
+)
 from .permissions import CanModifyTicket
 from .triage import triage_ticket
 from .history import snapshot, record_changes
@@ -147,6 +152,29 @@ class TicketViewSet(viewsets.ModelViewSet):
             comments = comments.filter(is_internal=False)
 
         serializer = CommentSerializer(comments, many=True)
+        return Response(serializer.data)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        serializer_class=TicketChangeSerializer,
+    )
+    def history(self, request, pk=None):
+        """List what changed on a ticket, oldest first.
+
+        Customers see only status changes: priority and assignee are internal
+        matters, like internal notes. Filtered on the server, because hiding
+        them in the UI would not be enough.
+        """
+        # get_object uses get_queryset, so a customer gets 404 for a ticket
+        # that is not theirs, before anything else happens.
+        ticket = self.get_object()
+
+        changes = ticket.changes.select_related("changed_by")
+        if not request.user.is_support_staff:
+            changes = changes.filter(field_name=TicketChange.Field.STATUS)
+
+        serializer = TicketChangeSerializer(changes, many=True)
         return Response(serializer.data)
 
 
