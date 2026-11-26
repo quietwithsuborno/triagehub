@@ -5,13 +5,15 @@ from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 from rest_framework.throttling import UserRateThrottle
-from .models import Ticket, Category, TicketChange
+from .models import Ticket, Category, TicketChange, Comment
 from .serializers import (
     TicketSerializer,
     CommentSerializer,
     CategorySerializer,
     TicketChangeSerializer,
+    ReopenSerializer,
 )
 from .permissions import CanModifyTicket
 from .triage import triage_ticket
@@ -176,6 +178,52 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         serializer = TicketChangeSerializer(changes, many=True)
         return Response(serializer.data)
+
+    @extend_schema(request=ReopenSerializer, responses={200: TicketSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        serializer_class=ReopenSerializer,
+    )
+    def reopen(self, request, pk=None):
+        """Open a resolved ticket again, with a reason: POST {"reason": "..."}.
+
+        The ticket's owner or support staff can do it, and only on a resolved
+        ticket. In one transaction: the status goes back to open (the assignee
+        stays), the reason becomes a public comment, and the history records it.
+        """
+        # A customer gets 404 here for a ticket that is not theirs.
+        ticket = self.get_object()
+        serializer = ReopenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            # Read the ticket again with a lock on its row. A second request
+            # at the same moment (a double click) waits here, then sees "open".
+            # No select_related: PostgreSQL does not lock across a join with
+            # a foreign key that can be empty.
+            ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
+            if ticket.status != Ticket.Status.RESOLVED:
+                return Response(
+                    {
+                        "detail": "Only a resolved ticket can be reopened. "
+                        f"This ticket is {ticket.status}."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            before = snapshot(ticket)
+            ticket.status = Ticket.Status.OPEN
+            ticket.save(update_fields=["status", "updated_at"])
+            Comment.objects.create(
+                ticket=ticket,
+                author=request.user,
+                body=serializer.validated_data["reason"],
+            )
+            record_changes(ticket, before, request.user)
+
+        data = TicketSerializer(ticket, context=self.get_serializer_context()).data
+        return Response(data)
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):

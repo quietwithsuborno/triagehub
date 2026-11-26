@@ -1106,3 +1106,110 @@ class TriageHistoryTests(APITestCase):
         self.assertEqual(ticket.priority, Ticket.Priority.MEDIUM)
         self.assertIsNone(ticket.category)
         self.assertEqual(TicketChange.objects.count(), 0)
+
+
+class TicketReopenTests(APITestCase):
+    """POST /tickets/{id}/reopen/: open a resolved ticket again, with a reason."""
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.jamal = User.objects.create_user(username="jamal", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.ticket = Ticket.objects.create(
+            title="Rahim ticket",
+            description="rahim er problem",
+            created_by=self.rahim,
+            assigned_to=self.karim,
+            status=Ticket.Status.RESOLVED,
+        )
+        self.url = f"/api/v1/tickets/{self.ticket.id}/reopen/"
+        self.reason = {"reason": "The problem came back today."}
+
+    def assert_nothing_changed(self):
+        """The ticket is still resolved, with no new comment or history."""
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Ticket.Status.RESOLVED)
+        self.assertEqual(Comment.objects.count(), 0)
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_customer_can_reopen_own_resolved_ticket(self):
+        self.client.force_authenticate(user=self.rahim)
+        response = self.client.post(self.url, self.reason)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["status"], "open")
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Ticket.Status.OPEN)
+        self.assertEqual(self.ticket.assigned_to, self.karim)  # the agent stays
+
+    def test_reason_becomes_a_public_comment(self):
+        self.client.force_authenticate(user=self.rahim)
+        self.client.post(self.url, self.reason)
+        comment = Comment.objects.get(ticket=self.ticket)
+        self.assertEqual(comment.body, "The problem came back today.")
+        self.assertEqual(comment.author, self.rahim)
+        self.assertFalse(comment.is_internal)
+
+    def test_reopen_is_written_to_the_history(self):
+        self.client.force_authenticate(user=self.rahim)
+        self.client.post(self.url, self.reason)
+        change = TicketChange.objects.get(ticket=self.ticket)
+        self.assertEqual(change.field_name, "status")
+        self.assertEqual(change.old_value, "resolved")
+        self.assertEqual(change.new_value, "open")
+        self.assertEqual(change.changed_by, self.rahim)
+
+    def test_staff_can_reopen(self):
+        self.client.force_authenticate(user=self.karim)
+        response = self.client.post(self.url, self.reason)
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_other_customer_gets_404(self):
+        self.client.force_authenticate(user=self.jamal)
+        response = self.client.post(self.url, self.reason)
+        self.assertEqual(response.status_code, 404)
+        self.assert_nothing_changed()
+
+    def test_anonymous_gets_401(self):
+        response = self.client.post(self.url, self.reason)
+        self.assertEqual(response.status_code, 401)
+        self.assert_nothing_changed()
+
+    def test_only_a_resolved_ticket_can_be_reopened(self):
+        self.client.force_authenticate(user=self.rahim)
+        for other_status in ["open", "in_progress", "closed"]:
+            with self.subTest(status=other_status):
+                Ticket.objects.filter(id=self.ticket.id).update(status=other_status)
+                response = self.client.post(self.url, self.reason)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(other_status, response.data["detail"])
+        self.assertEqual(Comment.objects.count(), 0)
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_reason_is_required_and_limited(self):
+        self.client.force_authenticate(user=self.rahim)
+        for bad in [{}, {"reason": "   "}, {"reason": "x" * 2001}]:
+            with self.subTest(data=str(bad)[:30]):
+                response = self.client.post(self.url, bad)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("reason", response.data)
+        self.assert_nothing_changed()
+
+    def test_second_reopen_is_refused(self):
+        # Two requests one after the other: the second finds the ticket open.
+        self.client.force_authenticate(user=self.rahim)
+        self.client.post(self.url, self.reason)
+        response = self.client.post(self.url, self.reason)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Comment.objects.count(), 1)
+        self.assertEqual(TicketChange.objects.count(), 1)
+
+    def test_failed_history_undoes_everything(self):
+        self.client.force_authenticate(user=self.rahim)
+        with mock.patch(
+            "tickets.views.record_changes", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.post(self.url, self.reason)
+        self.assert_nothing_changed()

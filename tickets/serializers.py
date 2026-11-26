@@ -128,3 +128,13 @@ class TicketChangeSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class ReopenSerializer(serializers.Serializer):
+    """What POST /tickets/{id}/reopen/ takes: why the ticket is opened again.
+
+    The reason becomes a public comment, so the agent sees what went wrong.
+    Spaces at both ends are trimmed first, so "   " counts as empty (400).
+    """
+
+    reason = serializers.CharField(max_length=2000)
