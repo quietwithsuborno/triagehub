@@ -20,3 +20,17 @@ class CanModifyTicket(BasePermission):
         if request.method in SAFE_METHODS or request.method == "POST":
             return True
         return request.user.is_support_staff
+
+
+class IsSupportStaff(BasePermission):
+    """Agents and admins only; customers get 403.
+
+    The same rule exists in knowledge/views.py. It is written again here, not
+    imported, because knowledge already imports from tickets, and importing
+    both ways can break (circular import). See journal 6D-6 and W7.
+    """
+
+    message = "Only support staff can do this."
+
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_support_staff

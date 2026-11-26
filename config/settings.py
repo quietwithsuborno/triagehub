@@ -188,6 +188,7 @@ REST_FRAMEWORK = {
         "ticket_create": "30/hour",
         "knowledge_ask": "20/hour",
         "suggest_reply": "60/hour",
+        "retriage": "30/hour",
     },
 }
 

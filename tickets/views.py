@@ -14,9 +14,10 @@ from .serializers import (
     CategorySerializer,
     TicketChangeSerializer,
     ReopenSerializer,
+    RetriageSerializer,
 )
-from .permissions import CanModifyTicket
-from .triage import triage_ticket
+from .permissions import CanModifyTicket, IsSupportStaff
+from .triage import triage_ticket, run_triage, get_ai_client
 from .history import snapshot, record_changes
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,12 @@ class TicketCreateThrottle(UserRateThrottle):
     """Limits how many tickets one user can create ("ticket_create" rate)."""
 
     scope = "ticket_create"
+
+
+class RetriageThrottle(UserRateThrottle):
+    """Limits how many re-triages one person asks for: each one uses the AI."""
+
+    scope = "retriage"
 
 
 class TicketViewSet(viewsets.ModelViewSet):
@@ -50,6 +57,11 @@ class TicketViewSet(viewsets.ModelViewSet):
         throttles = super().get_throttles()
         if self.action == "create":
             throttles.append(TicketCreateThrottle())
+        throttles = super().get_throttles()
+        if self.action == "create":
+            throttles.append(TicketCreateThrottle())
+        elif self.action == "retriage":
+            throttles.append(RetriageThrottle())
         return throttles
 
     def get_queryset(self):
@@ -224,6 +236,44 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         data = TicketSerializer(ticket, context=self.get_serializer_context()).data
         return Response(data)
+
+    @extend_schema(request=None, responses={200: RetriageSerializer})
+    @action(detail=True, methods=["post"], permission_classes=[IsSupportStaff])
+    def retriage(self, request, pk=None):
+        """Ask the AI again for a category and priority. Support staff only.
+
+        Only a suggestion: category and priority are not changed. The agent
+        PATCHes the ticket to use it, and that PATCH writes the history. The
+        summary belongs to the AI alone, so it is updated here directly.
+        Every AI call is written to AILog; if the AI fails, 503.
+        """
+        ticket = self.get_object()
+        result = run_triage(ticket, get_ai_client())
+        if result is None:  # AI off, too slow, or an unusable answer
+            return Response(
+                {"detail": "The AI could not triage this ticket now. Try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        ticket.ai_summary = result.summary
+        ticket.save(update_fields=["ai_summary", "updated_at"])
+
+        # filter(name=None) matches nothing, so "no category fits" gives None.
+        suggested = Category.objects.filter(name=result.category_name).first()
+        data = {
+            "suggestion": {
+                "category": suggested.id if suggested else None,
+                "category_name": suggested.name if suggested else None,
+                "priority": result.priority,
+            },
+            "current": {
+                "category": ticket.category_id,
+                "category_name": ticket.category.name if ticket.category else None,
+                "priority": ticket.priority,
+            },
+            "ai_summary": ticket.ai_summary,
+        }
+        return Response(RetriageSerializer(data).data)
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):

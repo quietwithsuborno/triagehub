@@ -1213,3 +1213,107 @@ class TicketReopenTests(APITestCase):
             with self.assertRaises(RuntimeError):
                 self.client.post(self.url, self.reason)
         self.assert_nothing_changed()
+
+
+class TicketRetriageTests(APITestCase):
+    """POST /tickets/{id}/retriage/: the AI suggests, the agent decides."""
+
+    VALID_ANSWER = (
+        '{"category": "Billing", "priority": "high", "summary": "Charged twice."}'
+    )
+
+    def setUp(self):
+        self.rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.billing = Category.objects.create(name="Billing")
+        # As if the AI was off when the ticket was created: default values.
+        self.ticket = Ticket.objects.create(
+            title="Double payment", description="Charged twice.", created_by=self.rahim
+        )
+        self.url = f"/api/v1/tickets/{self.ticket.id}/retriage/"
+
+    def retriage(self, user, ai):
+        """POST as user, with ai as the AI client (None means AI is off)."""
+        self.client.force_authenticate(user=user)
+        # tickets.views, not tickets.triage: views has its own imported name.
+        with mock.patch("tickets.views.get_ai_client", return_value=ai):
+            return self.client.post(self.url)
+
+    def test_staff_gets_a_suggestion(self):
+        response = self.retriage(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["suggestion"],
+            {
+                "category": self.billing.id,
+                "category_name": "Billing",
+                "priority": "high",
+            },
+        )
+        self.assertEqual(
+            response.data["current"],
+            {"category": None, "category_name": None, "priority": "medium"},
+        )
+        self.assertEqual(response.data["ai_summary"], "Charged twice.")
+
+    def test_category_and_priority_are_not_changed(self):
+        self.retriage(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.category)
+        self.assertEqual(self.ticket.priority, Ticket.Priority.MEDIUM)
+        self.assertEqual(TicketChange.objects.count(), 0)
+
+    def test_summary_is_updated(self):
+        self.retriage(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.ai_summary, "Charged twice.")
+
+    def test_customer_gets_403_and_the_ai_is_not_called(self):
+        ai = FakeAIClient(text=self.VALID_ANSWER)
+        response = self.retriage(self.rahim, ai)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(ai.calls, [])
+
+    def test_anonymous_gets_401(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 401)
+
+    def test_ai_error_gives_503_and_changes_nothing(self):
+        response = self.retriage(self.karim, FakeAIClient(error=TimeoutError("slow")))
+        self.assertEqual(response.status_code, 503)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.ai_summary, "")
+
+    def test_ai_off_gives_503(self):
+        response = self.retriage(self.karim, None)
+        self.assertEqual(response.status_code, 503)
+
+    def test_the_call_is_written_to_ailog(self):
+        self.retriage(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        log = AILog.objects.get()
+        self.assertEqual(log.purpose, AILog.Purpose.TRIAGE)
+        self.assertEqual(log.ticket, self.ticket)
+        self.assertEqual(log.status, AILog.Status.SUCCESS)
+
+    def test_no_fitting_category_gives_null(self):
+        answer = '{"category": null, "priority": "low", "summary": "Other."}'
+        response = self.retriage(self.karim, FakeAIClient(text=answer))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data["suggestion"]["category"])
+        self.assertIsNone(response.data["suggestion"]["category_name"])
+
+    def test_suggestion_can_be_used_with_patch(self):
+        # The whole path: ask the AI, then the agent PATCHes the suggestion.
+        response = self.retriage(self.karim, FakeAIClient(text=self.VALID_ANSWER))
+        suggestion = response.data["suggestion"]
+        self.client.patch(
+            f"/api/v1/tickets/{self.ticket.id}/",
+            {"category": suggestion["category"], "priority": suggestion["priority"]},
+        )
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.category, self.billing)
+        self.assertEqual(self.ticket.priority, Ticket.Priority.HIGH)
+        changed_by = set(TicketChange.objects.values_list("changed_by", flat=True))
+        self.assertEqual(changed_by, {self.karim.id})  # the agent decided

@@ -138,3 +138,23 @@ class ReopenSerializer(serializers.Serializer):
     """
 
     reason = serializers.CharField(max_length=2000)
+
+
+class TriageValuesSerializer(serializers.Serializer):
+    """Category and priority: what the ticket has, or what the AI suggests."""
+
+    category = serializers.IntegerField(allow_null=True)
+    category_name = serializers.CharField(allow_null=True)
+    priority = serializers.CharField()
+
+
+class RetriageSerializer(serializers.Serializer):
+    """The answer of POST /tickets/{id}/retriage/.
+
+    Nothing in it is saved on the ticket except ai_summary. To use the
+    suggestion, the agent PATCHes the ticket, which also writes the history.
+    """
+
+    suggestion = TriageValuesSerializer()
+    current = TriageValuesSerializer()
+    ai_summary = serializers.CharField()
