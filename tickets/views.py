@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 from rest_framework.throttling import UserRateThrottle
 from .models import Ticket, Category, TicketChange, Comment
@@ -15,10 +16,12 @@ from .serializers import (
     TicketChangeSerializer,
     ReopenSerializer,
     RetriageSerializer,
+    StatsSerializer,
 )
 from .permissions import CanModifyTicket, IsSupportStaff
 from .triage import triage_ticket, run_triage, get_ai_client
 from .history import snapshot, record_changes
+from .stats import build_stats
 
 logger = logging.getLogger(__name__)
 
@@ -288,3 +291,13 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     # There are only a few categories and a dropdown needs all of them,
     # so return a plain list instead of pages.
     pagination_class = None
+
+
+class StatsView(APIView):
+    """Numbers for the staff dashboard (step 6E)."""
+
+    permission_classes = [IsSupportStaff]
+
+    @extend_schema(responses={200: StatsSerializer})
+    def get(self, request):
+        return Response(StatsSerializer(build_stats()).data)

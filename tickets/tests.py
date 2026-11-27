@@ -1459,3 +1459,45 @@ class StatsBuildTests(APITestCase):
             build_stats(now=self.now)["ai_triage"],
             {"success": 2, "error": 1, "invalid": 0},
         )
+
+
+class StatsViewTests(APITestCase):
+    url = "/api/v1/stats/"
+
+    def setUp(self):
+        self.customer = User.objects.create_user(username="rina", password="pass12345")
+        self.agent = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.admin = User.objects.create_user(
+            username="farah", password="pass12345", role=User.Role.ADMIN
+        )
+        Ticket.objects.create(title="T", description="D", created_by=self.customer)
+
+    def test_anonymous_gets_401(self):
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+
+    def test_customer_gets_403(self):
+        self.client.force_authenticate(self.customer)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    def test_agent_gets_the_numbers(self):
+        self.client.force_authenticate(self.agent)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.data), {"tickets", "resolution", "ai_triage"})
+        self.assertEqual(response.data["tickets"]["total"], 1)
+        self.assertEqual(response.data["tickets"]["by_status"]["open"], 1)
+        self.assertIsNone(response.data["resolution"]["avg_hours"])
+
+    def test_admin_gets_the_numbers(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_response_matches_build_stats_exactly(self):
+        self.client.force_authenticate(self.agent)
+        self.assertEqual(self.client.get(self.url).json(), build_stats())
+
+    def test_stats_cannot_be_posted(self):
+        self.client.force_authenticate(self.agent)
+        self.assertEqual(self.client.post(self.url).status_code, 405)

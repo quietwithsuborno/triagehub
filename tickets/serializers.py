@@ -158,3 +158,52 @@ class RetriageSerializer(serializers.Serializer):
     suggestion = TriageValuesSerializer()
     current = TriageValuesSerializer()
     ai_summary = serializers.CharField()
+
+
+class StatusCountsSerializer(serializers.Serializer):
+    open = serializers.IntegerField()
+    in_progress = serializers.IntegerField()
+    resolved = serializers.IntegerField()
+    closed = serializers.IntegerField()
+
+
+class PriorityCountsSerializer(serializers.Serializer):
+    low = serializers.IntegerField()
+    medium = serializers.IntegerField()
+    high = serializers.IntegerField()
+    urgent = serializers.IntegerField()
+
+
+class CategoryCountSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    count = serializers.IntegerField()
+
+
+class TicketNumbersSerializer(serializers.Serializer):
+    total = serializers.IntegerField()
+    uncategorized = serializers.IntegerField()
+    unassigned = serializers.IntegerField()
+    new_last_7_days = serializers.IntegerField()
+    by_status = StatusCountsSerializer()
+    by_priority = PriorityCountsSerializer()
+    by_category = CategoryCountSerializer(many=True)
+
+
+class ResolutionSerializer(serializers.Serializer):
+    resolved = serializers.IntegerField()
+    without_history = serializers.IntegerField()
+    avg_hours = serializers.FloatField(allow_null=True)
+    reopened = serializers.IntegerField()
+
+
+class AITriageCountsSerializer(serializers.Serializer):
+    success = serializers.IntegerField()
+    error = serializers.IntegerField()
+    invalid = serializers.IntegerField()
+
+
+class StatsSerializer(serializers.Serializer):
+    tickets = TicketNumbersSerializer()
+    resolution = ResolutionSerializer()
+    ai_triage = AITriageCountsSerializer()
