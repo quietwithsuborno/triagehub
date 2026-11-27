@@ -25,9 +25,7 @@ class CanModifyTicket(BasePermission):
 class IsSupportStaff(BasePermission):
     """Agents and admins only; customers get 403.
 
-    The same rule exists in knowledge/views.py. It is written again here, not
-    imported, because knowledge already imports from tickets, and importing
-    both ways can break (circular import). See journal 6D-6 and W7.
+    The one place for this rule: knowledge/views.py imports it from here (W7).
     """
 
     message = "Only support staff can do this."

@@ -7,7 +7,6 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
-from rest_framework.permissions import BasePermission
 
 from django.shortcuts import get_object_or_404
 from .answer import AnswerValidationError, answer_question
@@ -20,6 +19,7 @@ from .serializers import (
 )
 
 from tickets.models import Ticket
+from tickets.permissions import IsSupportStaff
 from .search import MAX_QUESTION_CHARS
 
 logger = logging.getLogger(__name__)
@@ -88,15 +88,6 @@ class ModuleOverviewDetail(generics.RetrieveAPIView):
     queryset = ModuleOverview.objects.all()
     serializer_class = ModuleOverviewSerializer
     lookup_field = "module"
-
-
-class IsSupportStaff(BasePermission):
-    """Agents and admins only (customers get 403)."""
-
-    message = "Only support staff can ask for a reply draft."
-
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.is_support_staff
 
 
 class SuggestReplyThrottle(UserRateThrottle):
