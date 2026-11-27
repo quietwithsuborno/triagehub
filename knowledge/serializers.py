@@ -3,6 +3,7 @@
 from rest_framework import serializers
 
 from .models import ModuleOverview
+from .modules import module_name
 from .search import MAX_QUESTION_CHARS
 
 
@@ -28,10 +29,22 @@ class AnswerSerializer(serializers.Serializer):
 class ModuleOverviewSerializer(serializers.ModelSerializer):
     """A module's summary (both languages) and its Mermaid flowchart."""
 
+    name = serializers.SerializerMethodField()
+
     class Meta:
         model = ModuleOverview
         # source_hash and model_name stay inside: they are for us, not readers.
-        fields = ["module", "summary_en", "summary_bn", "flowchart", "updated_at"]
+        fields = [
+            "module",
+            "name",
+            "summary_en",
+            "summary_bn",
+            "flowchart",
+            "updated_at",
+        ]
+
+    def get_name(self, overview) -> str:
+        return module_name(overview.module)
 
 
 class SuggestedReplySerializer(serializers.Serializer):

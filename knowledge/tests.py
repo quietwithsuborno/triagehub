@@ -55,6 +55,7 @@ from .models import (
     ImageDescription,
     ModuleOverview,
 )
+from .modules import module_name
 from .overview import OverviewValidationError, build_overviews, parse_overview
 from .search import MAX_QUESTION_CHARS, SearchResult, search_chunks
 from .views import UNAVAILABLE
@@ -1431,3 +1432,31 @@ class SuggestedReplyApiTests(APITestCase):
             for _ in range(2):
                 self.assertEqual(self.suggest().status_code, 200)
             self.assertEqual(self.suggest().status_code, 429)
+
+
+class ModuleNameTests(SimpleTestCase):
+    def test_known_module_gets_the_name_from_the_docs(self):
+        self.assertEqual(module_name("sales"), "Sales & Distribution System")
+        self.assertEqual(module_name("admin-logistics"), "Admin & Logistics")
+
+    def test_unknown_module_gets_a_name_built_from_its_slug(self):
+        self.assertEqual(module_name("new-module"), "New Module")
+
+
+class ModuleNameApiTests(APITestCase):
+    def test_module_list_and_detail_show_the_name(self):
+        ModuleOverview.objects.create(
+            module="human-capital",
+            summary_en="E",
+            summary_bn="B",
+            flowchart="flowchart TD",
+            source_hash="x",
+            model_name="m",
+        )
+        rahim = User.objects.create_user(username="rahim", password="pass12345")
+        self.client.force_authenticate(user=rahim)
+
+        listing = self.client.get("/api/v1/knowledge/modules/").data["results"]
+        self.assertEqual(listing[0]["name"], "Human Capital Management")
+        detail = self.client.get("/api/v1/knowledge/modules/human-capital/").data
+        self.assertEqual(detail["name"], "Human Capital Management")
