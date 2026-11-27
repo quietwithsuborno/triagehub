@@ -64,6 +64,11 @@ class TicketSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Tickets can only be assigned to an agent or admin."
             )
+
+        if value is not None and not value.is_active:
+            raise serializers.ValidationError(
+                "This account is inactive. Assign the ticket to someone else."
+            )
         return value
 
 

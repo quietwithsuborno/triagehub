@@ -218,7 +218,8 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         The ticket's owner or support staff can do it, and only on a resolved
         ticket. In one transaction: the status goes back to open (the assignee
-        stays), the reason becomes a public comment, and the history records it.
+        stays, unless the account is inactive), the reason becomes a public
+        comment, and the history records it.
         """
         # A customer gets 404 here for a ticket that is not theirs.
         ticket = self.get_object()
@@ -242,7 +243,12 @@ class TicketViewSet(viewsets.ModelViewSet):
 
             before = snapshot(ticket)
             ticket.status = Ticket.Status.OPEN
-            ticket.save(update_fields=["status", "updated_at"])
+            # 6H-5: an inactive assignee can no longer work on it; let the
+            # team pick it up from the unassigned list.
+            if ticket.assigned_to and not ticket.assigned_to.is_active:
+                ticket.assigned_to = None
+            ticket.save(update_fields=["status", "assigned_to", "updated_at"])
+
             Comment.objects.create(
                 ticket=ticket,
                 author=request.user,

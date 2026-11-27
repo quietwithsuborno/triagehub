@@ -11,6 +11,7 @@ from rest_framework.test import APITestCase
 from accounts.models import User
 from .models import Ticket, Comment, Category, AILog, TicketChange
 from .stats import build_stats
+from .assignment import release_tickets
 from .triage import (
     FakeAIClient,
     OpenAICompatibleClient,
@@ -22,7 +23,12 @@ from .triage import (
 )
 from django.conf import settings
 from django.utils import timezone
-from django.test import SimpleTestCase, override_settings
+from django.contrib import admin
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.db.models import ProtectedError
+from rest_framework_simplejwt.tokens import RefreshToken
+from accounts.admin import CustomUserAdmin
+from django.test import SimpleTestCase, override_settings, RequestFactory
 from django.core.cache import cache
 from rest_framework.throttling import SimpleRateThrottle
 
@@ -1650,3 +1656,135 @@ class TicketSoftDeleteTests(APITestCase):
         restored = Ticket.objects.get(pk=self.ticket.pk)
         self.assertIsNone(restored.deleted_at)
         self.assertIsNone(restored.deleted_by)
+
+
+class AccountDeactivationTests(APITestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(username="rahim", password="pass12345")
+        self.karim = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.sara = User.objects.create_user(
+            username="sara", password="pass12345", role=User.Role.AGENT
+        )
+        self.boss = User.objects.create_superuser(username="boss", password="pass12345")
+
+    def make_ticket(self, status, assigned_to):
+        return Ticket.objects.create(
+            title="T",
+            description="D",
+            created_by=self.customer,
+            status=status,
+            assigned_to=assigned_to,
+        )
+
+    def deactivate(self, user):
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
+    def admin_save(self, user, changed):
+        request = RequestFactory().post("/admin/")
+        request.user = self.boss
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        form = mock.Mock(changed_data=changed)
+        CustomUserAdmin(User, admin.site).save_model(request, user, form, change=True)
+
+    def test_inactive_user_cannot_log_in(self):
+        self.deactivate(self.karim)
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"username": "karim", "password": "pass12345"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_old_token_stops_working_after_deactivation(self):
+        token = RefreshToken.for_user(self.karim).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(self.client.get("/api/v1/tickets/").status_code, 200)
+
+        self.deactivate(self.karim)
+        self.assertEqual(self.client.get("/api/v1/tickets/").status_code, 401)
+
+    def test_cannot_assign_a_ticket_to_an_inactive_agent(self):
+        ticket = self.make_ticket(Ticket.Status.OPEN, None)
+        self.deactivate(self.karim)
+        self.client.force_authenticate(self.sara)
+        response = self.client.patch(
+            f"/api/v1/tickets/{ticket.id}/",
+            {"assigned_to": self.karim.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("inactive", str(response.data["assigned_to"]))
+
+    def test_release_frees_only_open_and_in_progress_tickets(self):
+        open_ticket = self.make_ticket(Ticket.Status.OPEN, self.karim)
+        working = self.make_ticket(Ticket.Status.IN_PROGRESS, self.karim)
+        done = self.make_ticket(Ticket.Status.RESOLVED, self.karim)
+        saras = self.make_ticket(Ticket.Status.OPEN, self.sara)
+
+        self.assertEqual(release_tickets(self.karim, changed_by=self.boss), 2)
+        for ticket in (open_ticket, working):
+            ticket.refresh_from_db()
+            self.assertIsNone(ticket.assigned_to)
+        done.refresh_from_db()
+        self.assertEqual(done.assigned_to, self.karim)
+        saras.refresh_from_db()
+        self.assertEqual(saras.assigned_to, self.sara)
+
+        change = TicketChange.objects.get(ticket=open_ticket)
+        self.assertEqual(change.field_name, "assigned_to")
+        self.assertEqual(change.old_value, "karim")
+        self.assertEqual(change.new_value, "")
+        self.assertEqual(change.changed_by, self.boss)
+
+    def test_release_also_frees_a_ticket_in_the_bin(self):
+        binned = self.make_ticket(Ticket.Status.OPEN, self.karim)
+        Ticket.objects.filter(pk=binned.pk).update(deleted_at=timezone.now())
+        self.assertEqual(release_tickets(self.karim, changed_by=self.boss), 1)
+        self.assertIsNone(Ticket.all_objects.get(pk=binned.pk).assigned_to)
+
+    def test_unticking_active_in_admin_releases_the_tickets(self):
+        ticket = self.make_ticket(Ticket.Status.OPEN, self.karim)
+        self.karim.is_active = False
+        self.admin_save(self.karim, ["is_active"])
+        ticket.refresh_from_db()
+        self.assertIsNone(ticket.assigned_to)
+
+    def test_other_admin_edits_and_reactivating_release_nothing(self):
+        ticket = self.make_ticket(Ticket.Status.OPEN, self.karim)
+        self.karim.email = "karim@new.example.com"
+        self.admin_save(self.karim, ["email"])
+
+        self.deactivate(self.karim)
+        self.karim.is_active = True
+        self.admin_save(self.karim, ["is_active"])
+
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.assigned_to, self.karim)
+
+    def test_reopen_clears_an_inactive_assignee(self):
+        ticket = self.make_ticket(Ticket.Status.RESOLVED, self.karim)
+        self.deactivate(self.karim)
+        self.client.force_authenticate(self.customer)
+        response = self.client.post(
+            f"/api/v1/tickets/{ticket.id}/reopen/",
+            {"reason": "Broken again."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["assigned_to"])
+        self.assertEqual(
+            set(ticket.changes.values_list("field_name", flat=True)),
+            {"status", "assigned_to"},
+        )
+
+    def test_user_with_tickets_cannot_be_deleted(self):
+        self.make_ticket(Ticket.Status.OPEN, None)
+        with self.assertRaises(ProtectedError):
+            self.customer.delete()
+
+        self.sara.delete()
+        self.assertFalse(User.objects.filter(username="sara").exists())

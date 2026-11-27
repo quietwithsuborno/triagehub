@@ -65,7 +65,7 @@ class Ticket(models.Model):
     # CASCADE: if a user account is deleted, their tickets go with it.
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="created_tickets",
     )
     # SET_NULL: if an agent leaves, the ticket stays and becomes unassigned.
@@ -116,7 +116,7 @@ class Comment(models.Model):
     )
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="comments",
     )
     body = models.TextField()
