@@ -20,7 +20,7 @@ from .serializers import (
 )
 from .permissions import CanModifyTicket, IsSupportStaff
 from .triage import triage_ticket, run_triage, get_ai_client
-from .history import snapshot, record_changes
+from .history import snapshot, record_changes, CUSTOMER_VISIBLE_FIELDS
 from .stats import build_stats
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         changes = ticket.changes.select_related("changed_by")
         if not request.user.is_support_staff:
-            changes = changes.filter(field_name=TicketChange.Field.STATUS)
+            changes = changes.filter(field_name__in=CUSTOMER_VISIBLE_FIELDS)
 
         serializer = TicketChangeSerializer(changes, many=True)
         return Response(serializer.data)

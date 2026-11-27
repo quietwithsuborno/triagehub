@@ -2,6 +2,14 @@
 
 from .models import TicketChange
 
+# Customers see changes to what they can already see on their ticket.
+# Priority, category and assignee are internal (6B-3, 6F-3).
+CUSTOMER_VISIBLE_FIELDS = [
+    TicketChange.Field.STATUS,
+    TicketChange.Field.TITLE,
+    TicketChange.Field.DESCRIPTION,
+]
+
 
 def snapshot(ticket):
     """The values we keep history of, as plain text, right now.
@@ -17,6 +25,8 @@ def snapshot(ticket):
         TicketChange.Field.ASSIGNED_TO: (
             ticket.assigned_to.username if ticket.assigned_to else ""
         ),
+        TicketChange.Field.TITLE: ticket.title,
+        TicketChange.Field.DESCRIPTION: ticket.description,
     }
 
 

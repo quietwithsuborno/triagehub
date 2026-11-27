@@ -127,6 +127,8 @@ class TicketChange(models.Model):
         PRIORITY = "priority", "Priority"
         CATEGORY = "category", "Category"
         ASSIGNED_TO = "assigned_to", "Assigned to"
+        TITLE = "title", "Title"
+        DESCRIPTION = "description", "Description"
 
     ticket = models.ForeignKey(
         Ticket,

@@ -1501,3 +1501,80 @@ class StatsViewTests(APITestCase):
     def test_stats_cannot_be_posted(self):
         self.client.force_authenticate(self.agent)
         self.assertEqual(self.client.post(self.url).status_code, 405)
+
+
+class TicketTextHistoryTests(APITestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(username="rina", password="pass12345")
+        self.agent = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.original = "My invoice INV-12 was charged two times on 20 Nov."
+        self.ticket = Ticket.objects.create(
+            title="Invoice charged twice",
+            description=self.original,
+            created_by=self.customer,
+        )
+        self.url = f"/api/v1/tickets/{self.ticket.id}/"
+        self.history_url = f"/api/v1/tickets/{self.ticket.id}/history/"
+
+    def test_title_and_description_keep_the_full_old_and_new_text(self):
+        self.client.force_authenticate(self.agent)
+        response = self.client.patch(
+            self.url,
+            {
+                "title": "Duplicate charge on INV-12",
+                "description": "Customer says INV-12 was charged twice.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        changes = {change.field_name: change for change in self.ticket.changes.all()}
+        self.assertEqual(set(changes), {"title", "description"})
+        self.assertEqual(changes["title"].old_value, "Invoice charged twice")
+        self.assertEqual(changes["title"].new_value, "Duplicate charge on INV-12")
+        self.assertEqual(changes["description"].old_value, self.original)
+        self.assertEqual(
+            changes["description"].new_value, "Customer says INV-12 was charged twice."
+        )
+        self.assertEqual(changes["description"].changed_by, self.agent)
+
+    def test_same_text_or_extra_spaces_record_nothing(self):
+        self.client.force_authenticate(self.agent)
+        self.client.patch(
+            self.url,
+            {"title": "Invoice charged twice", "description": self.original + "   "},
+            format="json",
+        )
+        self.assertEqual(self.ticket.changes.count(), 0)
+
+    def test_customer_sees_title_and_status_but_not_priority(self):
+        self.client.force_authenticate(self.agent)
+        self.client.patch(
+            self.url,
+            {"title": "New title", "status": "in_progress", "priority": "high"},
+            format="json",
+        )
+        staff_rows = self.client.get(self.history_url).data
+        self.assertEqual(
+            {row["field_name"] for row in staff_rows}, {"title", "status", "priority"}
+        )
+
+        self.client.force_authenticate(self.customer)
+        customer_rows = self.client.get(self.history_url).data
+        self.assertEqual(
+            {row["field_name"] for row in customer_rows}, {"title", "status"}
+        )
+
+    def test_reopen_adds_only_the_status_row(self):
+        Ticket.objects.filter(pk=self.ticket.pk).update(status=Ticket.Status.RESOLVED)
+        self.client.force_authenticate(self.customer)
+        response = self.client.post(
+            f"/api/v1/tickets/{self.ticket.id}/reopen/",
+            {"reason": "Still charged twice."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            list(self.ticket.changes.values_list("field_name", flat=True)), ["status"]
+        )
