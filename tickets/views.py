@@ -2,6 +2,7 @@
 
 import logging
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -132,6 +133,18 @@ class TicketViewSet(viewsets.ModelViewSet):
             before = snapshot(serializer.instance)
             ticket = serializer.save()
             record_changes(ticket, before, self.request.user)
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            before = snapshot(serializer.instance)
+            ticket = serializer.save()
+            record_changes(ticket, before, self.request.user)
+
+    def perform_destroy(self, instance):
+        # 6G-3: the ticket goes to the bin; it is not removed from the database.
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = self.request.user
+        instance.save(update_fields=["deleted_at", "deleted_by", "updated_at"])
 
     @action(
         detail=True,

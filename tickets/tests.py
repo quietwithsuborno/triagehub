@@ -1578,3 +1578,75 @@ class TicketTextHistoryTests(APITestCase):
         self.assertEqual(
             list(self.ticket.changes.values_list("field_name", flat=True)), ["status"]
         )
+
+
+class TicketSoftDeleteTests(APITestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(username="rina", password="pass12345")
+        self.agent = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.ticket = Ticket.objects.create(
+            title="Printer error", description="D", created_by=self.customer
+        )
+        Comment.objects.create(ticket=self.ticket, author=self.customer, body="Help")
+        self.url = f"/api/v1/tickets/{self.ticket.id}/"
+
+    def delete_as_agent(self):
+        self.client.force_authenticate(self.agent)
+        return self.client.delete(self.url)
+
+    def test_delete_hides_the_ticket_but_keeps_it_and_its_comments(self):
+        self.assertEqual(self.delete_as_agent().status_code, 204)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        self.assertFalse(Ticket.objects.filter(pk=self.ticket.pk).exists())
+
+        kept = Ticket.all_objects.get(pk=self.ticket.pk)
+        self.assertIsNotNone(kept.deleted_at)
+        self.assertEqual(kept.deleted_by, self.agent)
+        self.assertEqual(Comment.objects.filter(ticket=kept).count(), 1)
+
+    def test_deleting_twice_gives_404_and_keeps_the_first_time(self):
+        self.delete_as_agent()
+        first_time = Ticket.all_objects.get(pk=self.ticket.pk).deleted_at
+        self.assertEqual(self.client.delete(self.url).status_code, 404)
+        self.assertEqual(
+            Ticket.all_objects.get(pk=self.ticket.pk).deleted_at, first_time
+        )
+
+    def test_customer_still_cannot_delete(self):
+        self.client.force_authenticate(self.customer)
+        self.assertEqual(self.client.delete(self.url).status_code, 403)
+        self.assertIsNone(Ticket.all_objects.get(pk=self.ticket.pk).deleted_at)
+
+    def test_deleted_ticket_is_left_out_of_the_list_and_stats(self):
+        Ticket.objects.create(title="Other", description="D", created_by=self.customer)
+        self.delete_as_agent()
+
+        rows = self.client.get("/api/v1/tickets/").data["results"]
+        self.assertEqual([row["title"] for row in rows], ["Other"])
+        self.assertEqual(build_stats()["tickets"]["total"], 1)
+
+    def test_comments_history_and_suggested_reply_give_404(self):
+        self.delete_as_agent()
+        for path in ["comments/", "history/"]:
+            self.assertEqual(self.client.get(self.url + path).status_code, 404)
+        response = self.client.post(f"{self.url}suggested-reply/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_admin_lists_deleted_tickets_and_can_restore_them(self):
+        self.delete_as_agent()
+        boss = User.objects.create_superuser(username="boss", password="pass12345")
+        self.client.force_login(boss)
+
+        listing = self.client.get("/admin/tickets/ticket/?deleted=yes")
+        self.assertContains(listing, "Printer error")
+
+        response = self.client.post(
+            "/admin/tickets/ticket/",
+            {"action": "restore", "_selected_action": [self.ticket.pk]},
+        )
+        self.assertEqual(response.status_code, 302)
+        restored = Ticket.objects.get(pk=self.ticket.pk)
+        self.assertIsNone(restored.deleted_at)
+        self.assertIsNone(restored.deleted_by)

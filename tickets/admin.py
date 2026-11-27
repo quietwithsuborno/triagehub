@@ -10,6 +10,23 @@ class CategoryAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
 
+class DeletedFilter(admin.SimpleListFilter):
+    """Right-side filter: deleted or not (6G-5)."""
+
+    title = "deleted"
+    parameter_name = "deleted"
+
+    def lookups(self, request, model_admin):
+        return [("no", "Not deleted"), ("yes", "Deleted")]
+
+    def queryset(self, request, queryset):
+        if self.value() == "no":
+            return queryset.filter(deleted_at__isnull=True)
+        if self.value() == "yes":
+            return queryset.filter(deleted_at__isnull=False)
+        return queryset
+
+
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
     list_display = (
@@ -21,12 +38,33 @@ class TicketAdmin(admin.ModelAdmin):
         "created_by",
         "assigned_to",
         "created_at",
+        "deleted_at",
     )
-    list_filter = ("status", "priority", "category")
+    list_filter = ("status", "priority", "category", DeletedFilter)
     search_fields = ("title", "description")
     # The list shows these related objects on every row; load them in one
     # query instead of one extra query per row (N+1).
     list_select_related = ("category", "created_by", "assigned_to")
+    # Deleting happens only through the API, restoring only through the
+    # action below, so the "who" is never lost (6G-8).
+    readonly_fields = ("deleted_at", "deleted_by")
+    actions = ["restore"]
+
+    def get_queryset(self, request):
+        # Ticket.objects hides deleted tickets; the admin must see them to
+        # restore them (6G-5).
+        queryset = Ticket.all_objects.get_queryset()
+        ordering = self.get_ordering(request)
+        if ordering:
+            queryset = queryset.order_by(*ordering)
+        return queryset
+
+    @admin.action(description="Restore selected tickets")
+    def restore(self, request, queryset):
+        count = queryset.filter(deleted_at__isnull=False).update(
+            deleted_at=None, deleted_by=None
+        )
+        self.message_user(request, f"Restored {count} ticket(s).")
 
 
 @admin.register(Comment)

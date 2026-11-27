@@ -20,6 +20,13 @@ class Category(models.Model):
         return self.name
 
 
+class TicketManager(models.Manager):
+    """Ticket.objects: only tickets that are not deleted (6G-2)."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+
 class Ticket(models.Model):
     """A support request opened by a customer and handled by the support team."""
 
@@ -72,10 +79,21 @@ class Ticket(models.Model):
 
     # Short summary to be written by the AI triage in Phase 4. Users cannot set
     # it through the API (read-only in the serializer).
-    ai_summary = models.CharField(max_length=300, blank=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)  # set once, on create
-    updated_at = models.DateTimeField(auto_now=True)  # refreshed on every save
+    ai_summary = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_tickets",
+    )
+
+    objects = TicketManager()
+    all_objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]  # newest tickets first
