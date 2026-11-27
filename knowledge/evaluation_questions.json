@@ -13,7 +13,7 @@
   {"question": "What are the steps of the purchase process, in order?", "language": "English", "pages": ["Purchase Transaction Lifecycle", "Quotation Comparison Workflow"]},
   {"question": "quality control kokhon kora hoy?", "language": "Banglish", "pages": ["Quotation Comparison Workflow"]},
   {"question": "PDR কী?", "language": "Bangla", "pages": ["Purchase Delivery Return"]},
-  {"question": "How do I create a sales invoice for a customer?", "language": "English", "pages": []},
+  {"question": "How do I create a sales invoice for a customer?", "language": "English", "pages": ["Sale Invoice"]},
   {"question": "কর্মচারীদের বেতন শিট কীভাবে তৈরি করব?", "language": "Bangla", "pages": []},
   {"question": "PrismERP er license er dam koto?", "language": "Banglish", "pages": []},
   {"question": "What is the capital of France?", "language": "English", "pages": []},
