@@ -5,10 +5,12 @@ jamal is a second customer. force_authenticate logs a user in without a real
 token; the real JWT flow is tested in accounts/tests.py.
 """
 
+from datetime import timedelta
 from unittest import mock
 from rest_framework.test import APITestCase
 from accounts.models import User
 from .models import Ticket, Comment, Category, AILog, TicketChange
+from .stats import build_stats
 from .triage import (
     FakeAIClient,
     OpenAICompatibleClient,
@@ -19,6 +21,7 @@ from .triage import (
     run_triage,
 )
 from django.conf import settings
+from django.utils import timezone
 from django.test import SimpleTestCase, override_settings
 from django.core.cache import cache
 from rest_framework.throttling import SimpleRateThrottle
@@ -1317,3 +1320,142 @@ class TicketRetriageTests(APITestCase):
         self.assertEqual(self.ticket.priority, Ticket.Priority.HIGH)
         changed_by = set(TicketChange.objects.values_list("changed_by", flat=True))
         self.assertEqual(changed_by, {self.karim.id})  # the agent decided
+
+
+class StatsBuildTests(APITestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(username="rina", password="pass12345")
+        self.agent = User.objects.create_user(
+            username="karim", password="pass12345", role=User.Role.AGENT
+        )
+        self.now = timezone.now()
+
+    def make_ticket(self, created_hours_ago=1, **fields):
+        ticket = Ticket.objects.create(
+            title="T", description="D", created_by=self.customer, **fields
+        )
+        Ticket.objects.filter(pk=ticket.pk).update(
+            created_at=self.now - timedelta(hours=created_hours_ago)
+        )
+        return ticket
+
+    def add_status_change(self, ticket, old, new, hours_ago):
+        change = TicketChange.objects.create(
+            ticket=ticket,
+            field_name=TicketChange.Field.STATUS,
+            old_value=old,
+            new_value=new,
+            changed_by=self.agent,
+        )
+        TicketChange.objects.filter(pk=change.pk).update(
+            created_at=self.now - timedelta(hours=hours_ago)
+        )
+
+    def test_empty_database_gives_zeros_and_every_key(self):
+        stats = build_stats(now=self.now)
+        self.assertEqual(stats["tickets"]["total"], 0)
+        self.assertEqual(
+            stats["tickets"]["by_status"],
+            {"open": 0, "in_progress": 0, "resolved": 0, "closed": 0},
+        )
+        self.assertEqual(
+            stats["tickets"]["by_priority"],
+            {"low": 0, "medium": 0, "high": 0, "urgent": 0},
+        )
+        self.assertEqual(
+            stats["resolution"],
+            {"resolved": 0, "without_history": 0, "avg_hours": None, "reopened": 0},
+        )
+        self.assertEqual(stats["ai_triage"], {"success": 0, "error": 0, "invalid": 0})
+
+    def test_counts_by_status_priority_and_category(self):
+        billing = Category.objects.create(name="Billing")
+        account = Category.objects.create(name="Account")
+        self.make_ticket(priority=Ticket.Priority.HIGH, category=billing)
+        self.make_ticket(status=Ticket.Status.IN_PROGRESS)
+        self.make_ticket(status=Ticket.Status.CLOSED, priority=Ticket.Priority.URGENT)
+
+        tickets = build_stats(now=self.now)["tickets"]
+        self.assertEqual(tickets["total"], 3)
+        self.assertEqual(
+            tickets["by_status"],
+            {"open": 1, "in_progress": 1, "resolved": 0, "closed": 1},
+        )
+        self.assertEqual(
+            tickets["by_priority"],
+            {"low": 0, "medium": 1, "high": 1, "urgent": 1},
+        )
+        self.assertEqual(tickets["uncategorized"], 2)
+        self.assertEqual(
+            tickets["by_category"],
+            [
+                {"id": account.id, "name": "Account", "count": 0},
+                {"id": billing.id, "name": "Billing", "count": 1},
+            ],
+        )
+
+    def test_unassigned_counts_only_open_or_in_progress_without_assignee(self):
+        self.make_ticket()
+        self.make_ticket(status=Ticket.Status.IN_PROGRESS)
+        self.make_ticket(assigned_to=self.agent)
+        self.make_ticket(status=Ticket.Status.RESOLVED)
+        self.assertEqual(build_stats(now=self.now)["tickets"]["unassigned"], 2)
+
+    def test_new_last_7_days_uses_the_given_time(self):
+        self.make_ticket(created_hours_ago=24)
+        self.make_ticket(created_hours_ago=24 * 8)
+        self.assertEqual(build_stats(now=self.now)["tickets"]["new_last_7_days"], 1)
+
+    def test_resolution_time_uses_the_last_resolve(self):
+        ticket = self.make_ticket(created_hours_ago=100, status=Ticket.Status.RESOLVED)
+        self.add_status_change(ticket, "open", "resolved", hours_ago=98)
+        self.add_status_change(ticket, "resolved", "open", hours_ago=90)
+        self.add_status_change(ticket, "open", "resolved", hours_ago=50)
+
+        resolution = build_stats(now=self.now)["resolution"]
+        self.assertEqual(resolution["resolved"], 1)
+        self.assertEqual(resolution["without_history"], 0)
+        self.assertEqual(resolution["avg_hours"], 50.0)
+        self.assertEqual(resolution["reopened"], 1)
+
+    def test_ticket_without_history_is_counted_but_left_out_of_the_average(self):
+        ticket = self.make_ticket(created_hours_ago=10, status=Ticket.Status.RESOLVED)
+        self.add_status_change(ticket, "open", "resolved", hours_ago=6)
+        self.make_ticket(created_hours_ago=1000, status=Ticket.Status.CLOSED)
+
+        resolution = build_stats(now=self.now)["resolution"]
+        self.assertEqual(resolution["resolved"], 2)
+        self.assertEqual(resolution["without_history"], 1)
+        self.assertEqual(resolution["avg_hours"], 4.0)
+
+    def test_ticket_open_again_is_left_out_of_the_average(self):
+        ticket = self.make_ticket(created_hours_ago=10)
+        self.add_status_change(ticket, "open", "resolved", hours_ago=8)
+        self.add_status_change(ticket, "resolved", "open", hours_ago=5)
+
+        resolution = build_stats(now=self.now)["resolution"]
+        self.assertEqual(resolution["resolved"], 0)
+        self.assertIsNone(resolution["avg_hours"])
+        self.assertEqual(resolution["reopened"], 1)
+
+    def test_reopened_counts_each_ticket_once(self):
+        twice = self.make_ticket(created_hours_ago=50)
+        self.add_status_change(twice, "open", "resolved", hours_ago=40)
+        self.add_status_change(twice, "resolved", "open", hours_ago=30)
+        self.add_status_change(twice, "open", "closed", hours_ago=20)
+        self.add_status_change(twice, "closed", "in_progress", hours_ago=10)
+        once = self.make_ticket(created_hours_ago=50)
+        self.add_status_change(once, "open", "resolved", hours_ago=40)
+        self.add_status_change(once, "resolved", "open", hours_ago=30)
+
+        self.assertEqual(build_stats(now=self.now)["resolution"]["reopened"], 2)
+
+    def test_ai_triage_counts_only_triage_calls(self):
+        for status in ["success", "success", "error"]:
+            AILog.objects.create(purpose=AILog.Purpose.TRIAGE, status=status)
+        AILog.objects.create(purpose=AILog.Purpose.ANSWER, status=AILog.Status.SUCCESS)
+
+        self.assertEqual(
+            build_stats(now=self.now)["ai_triage"],
+            {"success": 2, "error": 1, "invalid": 0},
+        )
