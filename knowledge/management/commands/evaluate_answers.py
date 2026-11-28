@@ -14,7 +14,7 @@ import json
 import time
 from pathlib import Path
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from knowledge.answer import answer_question
 
@@ -33,6 +33,16 @@ def check(case, answer):
     if not answer.found:
         return "said not found"
     titles = [source["title"] for source in answer.sources]
+    # A question with two parts needs a page for each part, not just one.
+
+    # A question with two parts needs a right page for each part, not just one.
+    # "parts" holds one group of right pages per part.
+    if case.get("parts"):
+        missing = [group for group in case["parts"] if not set(group) & set(titles)]
+        if missing:
+            return "missing part: " + " / ".join(group[0] for group in missing)
+        return "pass"
+
     if not any(title in expected_pages for title in titles):
         return "wrong pages: " + ", ".join(titles)
     return "pass"
@@ -47,11 +57,22 @@ class Command(BaseCommand):
             default="evaluation_results.csv",
             help="CSV file for the results (default evaluation_results.csv).",
         )
+        parser.add_argument(
+            "--only",
+            default="",
+            help="Ask only these question numbers, for example --only 21,22,23.",
+        )
 
     def handle(self, *args, **options):
         cases = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))
+        try:
+            only = {int(part) for part in options["only"].split(",") if part.strip()}
+        except ValueError:
+            raise CommandError("--only needs question numbers, for example 21,22,23.")
         rows = []
         for number, case in enumerate(cases, start=1):
+            if only and number not in only:
+                continue
             started = time.monotonic()
             try:
                 answer = answer_question(case["question"])
@@ -78,6 +99,8 @@ class Command(BaseCommand):
             )
             self.stdout.write(f"{number:2}. {result}")
             time.sleep(PAUSE_SECONDS)
+        if not rows:
+            raise CommandError("No questions matched --only.")
 
         # utf-8-sig: Excel then shows Bangla correctly.
         with open(options["output"], "w", newline="", encoding="utf-8-sig") as file:

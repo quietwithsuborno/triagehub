@@ -57,7 +57,13 @@ from .models import (
 )
 from .modules import module_name
 from .overview import OverviewValidationError, build_overviews, parse_overview
-from .search import MAX_QUESTION_CHARS, SearchResult, search_chunks
+from .search import (
+    MAX_QUESTION_CHARS,
+    SearchResult,
+    search_chunks,
+    split_question,
+    merge_results,
+)
 from .views import UNAVAILABLE
 
 
@@ -1049,9 +1055,12 @@ class EvaluateAnswersTests(SimpleTestCase):
 
     def test_the_real_question_file_is_well_formed(self):
         cases = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(len(cases), 20)
+        self.assertEqual(len(cases), 23)
         for case in cases:
-            self.assertEqual(set(case), {"question", "language", "pages"})
+            self.assertTrue({"question", "language", "pages"} <= set(case))
+            self.assertTrue(set(case) <= {"question", "language", "pages", "parts"})
+            for group in case.get("parts", []):
+                self.assertTrue(set(group) <= set(case["pages"]))
             self.assertIn(case["language"], {"English", "Bangla", "Banglish"})
 
 
@@ -1460,3 +1469,107 @@ class ModuleNameApiTests(APITestCase):
         self.assertEqual(listing[0]["name"], "Human Capital Management")
         detail = self.client.get("/api/v1/knowledge/modules/human-capital/").data
         self.assertEqual(detail["name"], "Human Capital Management")
+
+
+class SplitQuestionTests(SimpleTestCase):
+    def test_one_topic_is_not_split(self):
+        self.assertEqual(split_question("How do I create a purchase order?"), [])
+
+    def test_bangla_question_joined_with_ar(self):
+        self.assertEqual(
+            split_question("PO কীভাবে তৈরি করব আর GRN কীভাবে approve করব?"),
+            ["PO কীভাবে তৈরি করব", "GRN কীভাবে approve করব?"],
+        )
+
+    def test_english_question_joined_with_and(self):
+        self.assertEqual(
+            split_question("How do I create a PO and how do I approve a GRN?"),
+            ["How do I create a PO", "how do I approve a GRN?"],
+        )
+
+    def test_two_question_marks_and_a_leading_ar(self):
+        self.assertEqual(
+            split_question("ছুটির আবেদন কীভাবে করব? আর বেতন কীভাবে দেব?"),
+            ["ছুটির আবেদন কীভাবে করব", "বেতন কীভাবে দেব"],
+        )
+
+    def test_short_pairs_are_not_split(self):
+        self.assertEqual(split_question("What are the terms and conditions?"), [])
+        self.assertEqual(split_question("PO আর GRN এর পার্থক্য কী?"), [])
+
+    def test_at_most_three_parts(self):
+        parts = split_question(
+            "What is A one? What is B two? What is C three? What is D four?"
+        )
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(parts[2], "What is C three What is D four")
+
+
+def fake_result(pk):
+    return SearchResult(chunk=DocChunk(pk=pk), score=0.5)
+
+
+def pks(results):
+    return [result.chunk.pk for result in results]
+
+
+class MergeResultsTests(SimpleTestCase):
+    def test_whole_question_first_then_parts_take_turns(self):
+        found = [
+            [fake_result(n) for n in (1, 2, 3, 4, 5)],
+            [fake_result(n) for n in (11, 12, 13, 14, 15)],
+            [fake_result(n) for n in (21, 22, 23, 24, 25)],
+        ]
+        merged = merge_results(found, first=3, total=8)
+        self.assertEqual(pks(merged), [1, 2, 3, 11, 21, 12, 22, 13])
+
+    def test_no_chunk_twice(self):
+        found = [
+            [fake_result(1), fake_result(2)],
+            [fake_result(2), fake_result(3)],
+            [fake_result(1), fake_result(4)],
+        ]
+        self.assertEqual(pks(merge_results(found, first=3, total=8)), [1, 2, 3, 4])
+
+    def test_room_left_goes_to_the_whole_question(self):
+        found = [
+            [fake_result(n) for n in (1, 2, 3, 4, 5)],
+            [fake_result(11)],
+            [fake_result(21)],
+        ]
+        merged = merge_results(found, first=3, total=8)
+        self.assertEqual(pks(merged), [1, 2, 3, 11, 21, 4, 5])
+
+
+class SplitSearchTests(SimpleTestCase):
+    def search(self, question, vectors, lists):
+        with (
+            mock.patch("knowledge.search.get_embedding_client", return_value=object()),
+            mock.patch(
+                "knowledge.search.embed_texts", return_value=(vectors, "model")
+            ) as embed,
+            mock.patch("knowledge.search.closest_chunks", side_effect=lists) as closest,
+        ):
+            results = search_chunks(question)
+        return results, embed, closest
+
+    def test_split_question_embeds_once_and_searches_each_part(self):
+        results, embed, closest = self.search(
+            "PO কীভাবে তৈরি করব আর GRN কীভাবে approve করব?",
+            vectors=[[0.1], [0.2], [0.3]],
+            lists=[[fake_result(1)], [fake_result(11)], [fake_result(21)]],
+        )
+        embed.assert_called_once()
+        self.assertEqual(len(embed.call_args.args[0]), 3)
+        self.assertEqual(closest.call_count, 3)
+        self.assertEqual(pks(results), [1, 11, 21])
+
+    def test_one_topic_question_searches_once_as_before(self):
+        results, embed, closest = self.search(
+            "How do I create a purchase order?",
+            vectors=[[0.1]],
+            lists=[[fake_result(1), fake_result(2)]],
+        )
+        self.assertEqual(embed.call_args.args[0], ["How do I create a purchase order?"])
+        closest.assert_called_once_with([0.1], 5)
+        self.assertEqual(pks(results), [1, 2])
